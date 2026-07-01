@@ -1,0 +1,28 @@
+# Generated outputs
+output.mp4
+audio/
+images/
+tmp_segments/
+tmp_text/
+
+# Kokoro model files (auto-downloaded on first run via generate_audio.py)
+*.onnx
+*.bin
+
+# Font copies (auto-copied from Windows system fonts)
+arial.ttf
+arialbd.ttf
+
+# Cache
+.cache/
+__pycache__/
+*.pyc
+
+# pip
+constraints.txt
+
+# Env / secrets (YouTube API, Pexels, etc. — add to .env, never commit)
+.env
+
+# n8n exports with embedded credentials
+*.json.bak

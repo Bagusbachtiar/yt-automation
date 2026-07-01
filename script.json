@@ -1,0 +1,13 @@
+{
+  "title": "Why Cows Are a Climate Problem",
+  "lines": [
+    {"id": 1, "text": "Every time a cow digests food, it releases methane into the atmosphere.", "image_keyword": "cattle farm aerial view"},
+    {"id": 2, "text": "Methane is a potent greenhouse gas — far more warming per molecule than carbon dioxide.", "image_keyword": "greenhouse gas emissions industrial"},
+    {"id": 3, "text": "This process, called enteric fermentation, happens in the cow's digestive system.", "image_keyword": "dairy cow close up"},
+    {"id": 4, "text": "Livestock farming is one of the significant sources of agricultural greenhouse gas emissions globally.", "image_keyword": "large cattle herd field"},
+    {"id": 5, "text": "Scientists are exploring feed additives that can reduce the methane a cow produces.", "image_keyword": "animal feed grain barn"},
+    {"id": 6, "text": "Some farms are also capturing methane from manure to generate energy instead.", "image_keyword": "biogas plant farm"},
+    {"id": 7, "text": "Reducing meat consumption is another lever individuals can pull to lower their footprint.", "image_keyword": "plant based food vegetables"},
+    {"id": 8, "text": "The challenge is balancing global food needs with the climate cost of how we produce it.", "image_keyword": "sustainable agriculture farm landscape"}
+  ]
+}
