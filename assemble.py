@@ -24,6 +24,14 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+try:
+    from faster_whisper import WhisperModel as _WhisperModel
+    _WHISPER_AVAILABLE = True
+except ImportError:
+    _WHISPER_AVAILABLE = False
+
+_whisper_model = None
+
 # ── Config ────────────────────────────────────────────────────────────────────
 RES_W, RES_H = 1080, 1920          # portrait 9:16 for Shorts
 FPS = 30
@@ -133,6 +141,31 @@ def split_audio(audio: Path, n: int, tmp_dir: Path, lid: int, fractions=None) ->
     return chunks
 
 
+def _get_whisper():
+    global _whisper_model
+    if _whisper_model is None:
+        print("  [Whisper] loading tiny model (first run only)...")
+        _whisper_model = _WhisperModel("base", device="cpu", compute_type="int8")
+    return _whisper_model
+
+
+def get_word_timestamps(audio: Path) -> list:
+    """Returns [(word, start_sec, end_sec), ...] or [] on failure."""
+    if not _WHISPER_AVAILABLE:
+        return []
+    try:
+        model = _get_whisper()
+        segments, _ = model.transcribe(str(audio), word_timestamps=True, language="en")
+        words = []
+        for seg in segments:
+            for w in (seg.words or []):
+                words.append((w.word.strip(), w.start, w.end))
+        return words
+    except Exception as e:
+        print(f"    [Whisper] failed: {e} — falling back to char-proportional")
+        return []
+
+
 def format_ass_time(seconds: float) -> str:
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
@@ -140,16 +173,30 @@ def format_ass_time(seconds: float) -> str:
     return f"{h:d}:{m:02d}:{s:05.2f}"
 
 
-def build_ass(text: str, duration: float, ass_file: Path, font_name: str):
-    """Word-by-word karaoke-highlight caption, timed proportional to word length."""
-    words = text.split()
-    total_chars = sum(len(w) for w in words) or 1
-    parts = []
-    for w in words:
-        frac = len(w) / total_chars
-        centis = max(1, int(duration * frac * 100))
-        parts.append(f"{{\\k{centis}}}{w} ")
-    dialogue_text = "".join(parts).strip()
+def build_ass(text: str, duration: float, ass_file: Path, font_name: str, word_times=None):
+    """Word-by-word karaoke-highlight caption. Uses Whisper timestamps when available."""
+    if word_times:
+        parts = []
+        cursor = 0.0
+        for word, start, end in word_times:
+            if start > cursor + 0.02:
+                gap_centis = max(1, int((start - cursor) * 100))
+                parts.append(f"{{\\k{gap_centis}}} ")
+            word_centis = max(1, int((end - start) * 100))
+            parts.append(f"{{\\k{word_centis}}}{word} ")
+            cursor = end
+        if cursor < duration - 0.05:
+            parts.append(f"{{\\k{max(1, int((duration - cursor) * 100))}}} ")
+        dialogue_text = "".join(parts).strip()
+    else:
+        words = text.split()
+        total_chars = sum(len(w) for w in words) or 1
+        parts = []
+        for w in words:
+            frac = len(w) / total_chars
+            centis = max(1, int(duration * frac * 100))
+            parts.append(f"{{\\k{centis}}}{w} ")
+        dialogue_text = "".join(parts).strip()
     end_ts = format_ass_time(duration)
 
     content = f"""[Script Info]
@@ -187,7 +234,8 @@ def build_segment(
     # When silence, use the exact default duration.
     frames = int(30 * FPS) if audio else int(duration * FPS)
 
-    build_ass(text, duration, ass_file, "Arial")
+    word_times = get_word_timestamps(audio) if audio else []
+    build_ass(text, duration, ass_file, "Arial", word_times or None)
     # ASS filter needs forward slashes — backslash is a filter-string escape char
     ass_path = str(ass_file).replace("\\", "/")
 
