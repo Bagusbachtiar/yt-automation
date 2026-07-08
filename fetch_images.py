@@ -145,43 +145,38 @@ def main():
 
     for line in lines:
         lid = line["id"]
+        keyword = (
+            line.get("image_keyword")
+            or (line.get("image_keywords") or [None])[0]
+            or line["text"]
+        )
+        dest = IMAGES_DIR / f"{lid}.jpg"
 
-        # Support both image_keywords (array) and image_keyword (string)
-        keywords = line.get("image_keywords") or []
-        if not keywords:
-            kw = line.get("image_keyword") or line["text"]
-            keywords = [kw]
+        print(f"  Line {lid:2d}: {keyword}")
 
-        print(f"  Line {lid:2d} ({len(keywords)} image{'s' if len(keywords)>1 else ''}):")
+        if dest.exists():
+            print(f"    already exists — skip")
+            skipped += 1
+            continue
 
-        for i, keyword in enumerate(keywords, start=1):
-            dest = IMAGES_DIR / f"{lid}_{i}.jpg"
+        img_url = fetch_one(keyword, pexels_key, pixabay_key)
 
-            if dest.exists():
-                print(f"    [{i}] already exists — skip")
-                skipped += 1
-                continue
-
-            print(f"    [{i}] {keyword}")
-
-            img_url = fetch_one(keyword, pexels_key, pixabay_key)
-
-            if not img_url:
-                print(f"      [FAIL] no result from any provider")
-                failed += 1
-                time.sleep(SLEEP_BETWEEN)
-                continue
-
-            try:
-                download(img_url, dest)
-                size_kb = dest.stat().st_size // 1024
-                print(f"      saved {dest.name} ({size_kb} KB)")
-                ok += 1
-            except Exception as e:
-                print(f"      [FAIL] download error: {e}")
-                failed += 1
-
+        if not img_url:
+            print(f"    [FAIL] no result from any provider")
+            failed += 1
             time.sleep(SLEEP_BETWEEN)
+            continue
+
+        try:
+            download(img_url, dest)
+            size_kb = dest.stat().st_size // 1024
+            print(f"    saved {dest.name} ({size_kb} KB)")
+            ok += 1
+        except Exception as e:
+            print(f"    [FAIL] download error: {e}")
+            failed += 1
+
+        time.sleep(SLEEP_BETWEEN)
 
     print(f"\nDone. OK={ok}  skipped={skipped}  failed={failed}")
     if ok + skipped > 0:
