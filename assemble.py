@@ -15,6 +15,7 @@ Run:
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -27,18 +28,26 @@ FPS = 30
 CROSSFADE_SECS = 0.5
 AUDIO_XFADE_SECS = 0.05
 DEFAULT_LINE_SECS = 5.0
-FONT_SIZE = 64
-CAPTION_MARGIN_V = 320
+FONT_NAME = "Impact"
+FONT_SIZE = 68
+CAPTION_MARGIN_V = 280
 ZOOM_SPEED = 0.0015
 MAX_ZOOM = 1.5
 
+CHUNK_BREAK_RE = re.compile(
+    r'(?<=[,;—])\s+'
+    r'|(?=\b(?:and|but|so|because|which|when|or)\b)',
+    re.IGNORECASE,
+)
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
-SCRIPT_JSON = Path("script.json")
-IMAGES_DIR  = Path("images")
-AUDIO_DIR   = Path("audio")
-OUTPUT      = Path("output.mp4")
-TMP_SEGS    = Path("tmp_segments")
-TMP_TXT     = Path("tmp_text")
+SCRIPT_JSON  = Path("script.json")
+IMAGES_DIR   = Path("images")
+AUDIO_DIR    = Path("audio")
+OUTPUT       = Path("output.mp4")
+TMP_SEGS     = Path("tmp_segments")
+TMP_CONCAT   = Path("tmp_concat.mp4")
+CAPTIONS_ASS = Path("captions.ass")
 
 IMAGE_EXTS = [".jpg", ".jpeg", ".png", ".webp"]
 AUDIO_EXTS = [".wav", ".mp3", ".m4a", ".ogg"]
@@ -71,6 +80,37 @@ def find_file(directory: Path, stem: str, exts) -> Optional[Path]:
     return None
 
 
+def split_into_chunks(text: str) -> list:
+    """Split text into ~3-6 word caption chunks at natural breakpoints."""
+    parts = [p.strip() for p in CHUNK_BREAK_RE.split(text) if p.strip()]
+    if len(parts) <= 1:
+        words = text.split()
+        n = max(1, round(len(words) / 5))
+        size = max(1, len(words) // n)
+        parts = [" ".join(words[i:i + size]) for i in range(0, len(words), size)]
+
+    # Merge chunks shorter than 3 words into previous
+    merged = [parts[0]]
+    for p in parts[1:]:
+        if len(p.split()) < 3:
+            merged[-1] = merged[-1] + " " + p
+        else:
+            merged.append(p)
+
+    # Split chunks longer than 9 words at word midpoint
+    result = []
+    for chunk in merged:
+        words = chunk.split()
+        if len(words) > 9:
+            mid = len(words) // 2
+            result.append(" ".join(words[:mid]))
+            result.append(" ".join(words[mid:]))
+        else:
+            result.append(chunk)
+
+    return result or [text]
+
+
 def format_ass_time(seconds: float) -> str:
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
@@ -78,40 +118,68 @@ def format_ass_time(seconds: float) -> str:
     return f"{h:d}:{m:02d}:{s:05.2f}"
 
 
-def build_ass(text: str, duration: float, ass_file: Path, font_name: str):
-    """Static caption — full text shown for entire segment duration."""
-    end_ts = format_ass_time(duration)
-    content = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {RES_W}
-PlayResY: {RES_H}
+def build_ass(captions: list):
+    """
+    Generate a single ASS file for the whole video with correct cumulative timestamps.
+    captions: [(text, duration_secs), ...] in segment order.
+    Each line is split into 2-4 chunks; duration distributed by character count.
+    """
+    events = []
+    video_offset = 0.0
 
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,{font_name},{FONT_SIZE},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,1,2,60,60,{CAPTION_MARGIN_V},0
+    for i, (text, line_dur) in enumerate(captions):
+        is_last_line = (i == len(captions) - 1)
+        chunks = split_into_chunks(text)
+        total_chars = sum(len(c) for c in chunks) or 1
 
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.00,{end_ts},Caption,,0,0,0,,{text}
-"""
-    ass_file.write_text(content, encoding="utf-8")
+        chunk_start = video_offset
+        for chunk in chunks:
+            chunk_dur = line_dur * (len(chunk) / total_chars)
+            chunk_end = chunk_start + chunk_dur
+            events.append((chunk_start, max(chunk_start + 0.1, chunk_end), chunk))
+            chunk_start = chunk_end
+
+        video_offset += line_dur - (0 if is_last_line else CROSSFADE_SECS)
+
+    dialogue_lines = []
+    for start, end, text in events:
+        s = format_ass_time(start)
+        e = format_ass_time(end)
+        dialogue_lines.append(
+            f"Dialogue: 0,{s},{e},Caption,,0,0,0,,{{\\fad(150,50)}}{text}"
+        )
+
+    content = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {RES_W}\n"
+        f"PlayResY: {RES_H}\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+        "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Caption,{FONT_NAME},{FONT_SIZE},"
+        f"&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,"
+        f"0,0,0,0,100,100,2,0,1,4,2,2,60,60,{CAPTION_MARGIN_V},1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        + "\n".join(dialogue_lines) + "\n"
+    )
+    CAPTIONS_ASS.write_text(content, encoding="utf-8")
 
 
-# ── Segment builder ───────────────────────────────────────────────────────────
+# ── Segment builder (no captions — burned after concat) ───────────────────────
 
 def build_segment(
     image: Path,
-    text: str,
     duration: float,
     audio: Optional[Path],
-    ass_file: Path,
     out: Path,
     zoom_out: bool = False,
 ):
     frames = int(30 * FPS) if audio else int(duration * FPS)
-
-    build_ass(text, duration, ass_file, "Arial")
-    ass_path = str(ass_file).replace("\\", "/")
 
     scale = (
         f"scale={RES_W * 2}:{RES_H * 2}"
@@ -129,7 +197,7 @@ def build_segment(
         f"y='ih/2-(ih/zoom/2)':"
         f"d={frames}:s={RES_W}x{RES_H}:fps={FPS}"
     )
-    vf = f"{scale},{zoompan},ass='{ass_path}'"
+    vf = f"{scale},{zoompan}"
 
     base = ["ffmpeg", "-y", "-loop", "1", "-i", str(image)]
 
@@ -211,6 +279,22 @@ def concat_segments(segments: list, out: Path):
         raise RuntimeError("Concat failed")
 
 
+def burn_captions(video_in: Path, ass_file: Path, out: Path):
+    ass_path = str(ass_file).replace("\\", "/")
+    cmd = [
+        "ffmpeg", "-y", "-i", str(video_in),
+        "-vf", f"ass='{ass_path}'",
+        "-c:v", "libx264", "-preset", "fast",
+        "-c:a", "copy",
+        "-pix_fmt", "yuv420p",
+        str(out),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"\n[ffmpeg stderr — burn_captions]\n{result.stderr[-3000:]}")
+        raise RuntimeError("Caption burn failed")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -219,7 +303,7 @@ def main():
     if not SCRIPT_JSON.exists():
         sys.exit(f"[ERROR] {SCRIPT_JSON} not found.")
     if not IMAGES_DIR.exists():
-        sys.exit(f"[ERROR] {IMAGES_DIR}/ not found — create it and add images named 1.jpg, 2.jpg, ...")
+        sys.exit(f"[ERROR] {IMAGES_DIR}/ not found — add images named 1.jpg, 2.jpg, ...")
 
     script = json.loads(SCRIPT_JSON.read_text(encoding="utf-8"))
     lines  = script["lines"]
@@ -227,9 +311,10 @@ def main():
     print(f"\nScript: '{title}' — {len(lines)} lines\n")
 
     TMP_SEGS.mkdir(exist_ok=True)
-    TMP_TXT.mkdir(exist_ok=True)
 
     segments = []
+    captions = []   # [(text, duration), ...] — used to build final ASS
+
     for idx, line in enumerate(lines):
         lid  = line["id"]
         text = line["text"]
@@ -239,26 +324,31 @@ def main():
             print(f"  [SKIP] line {lid}: no image in {IMAGES_DIR}/")
             continue
 
-        audio = find_file(AUDIO_DIR, str(lid), AUDIO_EXTS) if AUDIO_DIR.exists() else None
+        audio    = find_file(AUDIO_DIR, str(lid), AUDIO_EXTS) if AUDIO_DIR.exists() else None
         duration = get_duration(audio) if audio else DEFAULT_LINE_SECS
 
         src = audio.name if audio else f"silence ({DEFAULT_LINE_SECS}s)"
         print(f"  Line {lid:2d} [{duration:.1f}s | {src}]")
         print(f"         {text[:80]}{'...' if len(text) > 80 else ''}")
 
-        seg_out  = TMP_SEGS / f"seg_{lid:03d}.mp4"
-        ass_file = TMP_TXT  / f"line_{lid:03d}.ass"
-        build_segment(image, text, duration, audio, ass_file, seg_out, zoom_out=(idx % 2 == 1))
+        seg_out = TMP_SEGS / f"seg_{lid:03d}.mp4"
+        build_segment(image, duration, audio, seg_out, zoom_out=(idx % 2 == 1))
         segments.append(seg_out)
+        captions.append((text, duration))
 
     if not segments:
         sys.exit("\n[ERROR] No segments built — check images/ has files named 1.jpg, 2.jpg, ...")
 
     print(f"\nConcatenating {len(segments)} segments with {CROSSFADE_SECS}s crossfades...")
-    concat_segments(segments, OUTPUT)
+    concat_segments(segments, TMP_CONCAT)
 
+    print("Burning captions...")
+    build_ass(captions)
+    burn_captions(TMP_CONCAT, CAPTIONS_ASS, OUTPUT)
+
+    TMP_CONCAT.unlink(missing_ok=True)
+    CAPTIONS_ASS.unlink(missing_ok=True)
     shutil.rmtree(TMP_SEGS, ignore_errors=True)
-    shutil.rmtree(TMP_TXT,  ignore_errors=True)
 
     print(f"\nDone → {OUTPUT.resolve()}")
 
