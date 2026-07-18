@@ -81,7 +81,6 @@ def find_file(directory: Path, stem: str, exts) -> Optional[Path]:
 
 
 def split_into_chunks(text: str) -> list:
-    """Split text into ~3-6 word caption chunks at natural breakpoints."""
     parts = [p.strip() for p in CHUNK_BREAK_RE.split(text) if p.strip()]
     if len(parts) <= 1:
         words = text.split()
@@ -89,7 +88,6 @@ def split_into_chunks(text: str) -> list:
         size = max(1, len(words) // n)
         parts = [" ".join(words[i:i + size]) for i in range(0, len(words), size)]
 
-    # Merge chunks shorter than 3 words into previous
     merged = [parts[0]]
     for p in parts[1:]:
         if len(p.split()) < 3:
@@ -97,7 +95,6 @@ def split_into_chunks(text: str) -> list:
         else:
             merged.append(p)
 
-    # Split chunks longer than 9 words at word midpoint
     result = []
     for chunk in merged:
         words = chunk.split()
@@ -120,15 +117,14 @@ def format_ass_time(seconds: float) -> str:
 
 def build_ass(captions: list):
     """
-    Generate a single ASS file for the whole video with correct cumulative timestamps.
-    captions: [(text, duration_secs), ...] in segment order.
-    Each line is split into 2-4 chunks; duration distributed by character count.
+    Single ASS for the whole video. captions = [(text, duration_secs), ...].
+    Duration is raw audio duration — no apad, so get_duration(audio) is exact.
     """
     events = []
     video_offset = 0.0
 
     for i, (text, line_dur) in enumerate(captions):
-        is_last_line = (i == len(captions) - 1)
+        is_last = (i == len(captions) - 1)
         chunks = split_into_chunks(text)
         total_chars = sum(len(c) for c in chunks) or 1
 
@@ -139,7 +135,7 @@ def build_ass(captions: list):
             events.append((chunk_start, max(chunk_start + 0.1, chunk_end), chunk))
             chunk_start = chunk_end
 
-        video_offset += line_dur - (0 if is_last_line else CROSSFADE_SECS)
+        video_offset += line_dur - (0 if is_last else CROSSFADE_SECS)
 
     dialogue_lines = []
     for start, end, text in events:
@@ -170,7 +166,7 @@ def build_ass(captions: list):
     CAPTIONS_ASS.write_text(content, encoding="utf-8")
 
 
-# ── Segment builder (no captions — burned after concat) ───────────────────────
+# ── Segment builder ───────────────────────────────────────────────────────────
 
 def build_segment(
     image: Path,
@@ -179,7 +175,7 @@ def build_segment(
     out: Path,
     zoom_out: bool = False,
 ):
-    frames = int(30 * FPS) if audio else int(duration * FPS)
+    frames = int(duration * FPS)
 
     scale = (
         f"scale={RES_W * 2}:{RES_H * 2}"
@@ -205,7 +201,7 @@ def build_segment(
         cmd = base + [
             "-i", str(audio),
             "-vf", vf,
-            "-af", "loudnorm,apad=pad_dur=0.8",
+            "-af", "loudnorm",
             "-c:v", "libx264", "-preset", "fast",
             "-c:a", "aac", "-ar", "44100",
             "-pix_fmt", "yuv420p",
@@ -313,7 +309,7 @@ def main():
     TMP_SEGS.mkdir(exist_ok=True)
 
     segments = []
-    captions = []   # [(text, duration), ...] — used to build final ASS
+    captions = []  # [(text, duration), ...] — raw audio duration, no apad
 
     for idx, line in enumerate(lines):
         lid  = line["id"]
