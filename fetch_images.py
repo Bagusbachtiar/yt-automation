@@ -17,6 +17,21 @@ import urllib.parse
 import urllib.error
 from pathlib import Path
 
+COMMONS_API = "https://commons.wikimedia.org/w/api.php"
+COMMONS_IMAGE_EXTS = (".jpg", ".jpeg", ".png")
+
+
+def is_acceptable_license(license_str: str) -> bool:
+    l = license_str.lower().strip()
+    if not l:
+        return False
+    if "public domain" in l or l == "cc0":
+        return True
+    # CC BY only — reject CC BY-SA, CC BY-NC, CC BY-ND
+    if l.startswith("cc by") and "sa" not in l and "nc" not in l and "nd" not in l:
+        return True
+    return False
+
 # Windows Python SSL bundle often has expired certs — bypass verification
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
@@ -42,6 +57,47 @@ def load_env():
                 continue
             k, _, v = line.partition("=")
             os.environ.setdefault(k.strip(), v.strip())
+
+
+# ── Wikimedia Commons ─────────────────────────────────────────────────────────
+
+def commons_search(query: str) -> str | None:
+    try:
+        params = urllib.parse.urlencode({
+            "action": "query",
+            "generator": "search",
+            "gsrsearch": query,
+            "gsrnamespace": 6,
+            "gsrlimit": 10,
+            "prop": "imageinfo",
+            "iiprop": "url|extmetadata",
+            "iiurlwidth": 1080,
+            "iiextmetadatafilter": "LicenseShortName",
+            "format": "json",
+        })
+        req = urllib.request.Request(
+            f"{COMMONS_API}?{params}",
+            headers={"User-Agent": "yt-automation/1.0 (bagusbachtiar50@gmail.com)"},
+        )
+        with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as resp:
+            data = json.loads(resp.read())
+        pages = data.get("query", {}).get("pages", {})
+        for page in pages.values():
+            info = (page.get("imageinfo") or [{}])[0]
+            license_str = (info.get("extmetadata", {})
+                               .get("LicenseShortName", {})
+                               .get("value", ""))
+            # prefer resized thumbnail, fall back to full URL
+            img_url = info.get("thumburl") or info.get("url", "")
+            if not img_url:
+                continue
+            if not any(img_url.lower().split("?")[0].endswith(ext) for ext in COMMONS_IMAGE_EXTS):
+                continue
+            if is_acceptable_license(license_str):
+                return img_url
+    except Exception as e:
+        print(f"    [Commons] error: {e}")
+    return None
 
 
 # ── Pexels ────────────────────────────────────────────────────────────────────
@@ -104,22 +160,35 @@ def pixabay_search(query: str, api_key: str) -> str | None:
 # ── Download ──────────────────────────────────────────────────────────────────
 
 def fetch_one(query: str, pexels_key: str, pixabay_key: str) -> str | None:
-    img_url = None
+    img_url = commons_search(query)
+    if img_url:
+        print(f"      -> Wikimedia Commons")
+        return img_url
     if pexels_key:
         img_url = pexels_search(query, pexels_key)
         if img_url:
-            print(f"      → Pexels")
-    if not img_url and pixabay_key:
+            print(f"      -> Pexels")
+            return img_url
+    if pixabay_key:
         img_url = pixabay_search(query, pixabay_key)
         if img_url:
-            print(f"      → Pixabay")
+            print(f"      -> Pixabay")
     return img_url
 
 
 def download(url: str, dest: Path):
     req = urllib.request.Request(url, headers={"User-Agent": "yt-automation/1.0"})
-    with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as resp:
-        dest.write_bytes(resp.read())
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as resp:
+                dest.write_bytes(resp.read())
+            return
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 0:
+                print(f"    [rate limit] waiting 5s...")
+                time.sleep(5)
+            else:
+                raise
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
