@@ -8,14 +8,13 @@ Expected layout:
   audio/1.wav      — OPTIONAL per-line TTS audio; absent = DEFAULT_LINE_SECS silence
 
 Output:
-  output.mp4       — 1080x1920 portrait, H.264, AAC, captions, Ken Burns zoom, crossfades
+  output.mp4       — 1080x1920 portrait, H.264, AAC, word-by-word captions, Ken Burns zoom, crossfades
 
 Run:
   python assemble.py
 """
 
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -26,19 +25,14 @@ from typing import Optional
 RES_W, RES_H = 1080, 1920
 FPS = 30
 CROSSFADE_SECS = 0.5
-AUDIO_XFADE_SECS = 0.05
+AUDIO_XFADE_SECS = 0.5
+SEGMENT_PAD_SECS = 1.0
 DEFAULT_LINE_SECS = 5.0
-FONT_NAME = "Impact"
-FONT_SIZE = 68
-CAPTION_MARGIN_V = 280
+FONT_NAME = "Arial Black"
+FONT_SIZE = 90
+CAPTION_MARGIN_V = 260
 ZOOM_SPEED = 0.0015
 MAX_ZOOM = 1.5
-
-CHUNK_BREAK_RE = re.compile(
-    r'(?<=[,;—])\s+'
-    r'|(?=\b(?:and|but|so|because|which|when|or)\b)',
-    re.IGNORECASE,
-)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_JSON  = Path("script.json")
@@ -80,32 +74,35 @@ def find_file(directory: Path, stem: str, exts) -> Optional[Path]:
     return None
 
 
-def split_into_chunks(text: str) -> list:
-    parts = [p.strip() for p in CHUNK_BREAK_RE.split(text) if p.strip()]
-    if len(parts) <= 1:
-        words = text.split()
-        n = max(1, round(len(words) / 5))
-        size = max(1, len(words) // n)
-        parts = [" ".join(words[i:i + size]) for i in range(0, len(words), size)]
+def load_whisper():
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        sys.exit("[ERROR] faster-whisper not installed. Run: pip install faster-whisper")
+    print("Loading Whisper model...")
+    model = WhisperModel("base", device="cpu", compute_type="int8")
+    print("Whisper ready.\n")
+    return model
 
-    merged = [parts[0]]
-    for p in parts[1:]:
-        if len(p.split()) < 3:
-            merged[-1] = merged[-1] + " " + p
-        else:
-            merged.append(p)
 
-    result = []
-    for chunk in merged:
-        words = chunk.split()
-        if len(words) > 9:
-            mid = len(words) // 2
-            result.append(" ".join(words[:mid]))
-            result.append(" ".join(words[mid:]))
-        else:
-            result.append(chunk)
+def extract_audio(video: Path, out: Path):
+    """Extract audio from video to WAV for Whisper."""
+    cmd = ["ffmpeg", "-y", "-i", str(video), "-vn", "-acodec", "pcm_s16le", str(out)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError("Audio extraction failed")
 
-    return result or [text]
+
+def transcribe_words(model, audio: Path) -> list:
+    """Return [(word, start_sec, end_sec), ...] from audio file."""
+    segments, _ = model.transcribe(str(audio), word_timestamps=True)
+    words = []
+    for seg in segments:
+        for w in (seg.words or []):
+            word = w.word.strip().replace(',', '').replace('.', '').strip('-')
+            if word:
+                words.append((w.start, w.end, word))
+    return words
 
 
 def format_ass_time(seconds: float) -> str:
@@ -115,34 +112,14 @@ def format_ass_time(seconds: float) -> str:
     return f"{h:d}:{m:02d}:{s:05.2f}"
 
 
-def build_ass(captions: list):
-    """
-    Single ASS for the whole video. captions = [(text, duration_secs), ...].
-    Duration is raw audio duration — no apad, so get_duration(audio) is exact.
-    """
-    events = []
-    video_offset = 0.0
-
-    for i, (text, line_dur) in enumerate(captions):
-        is_last = (i == len(captions) - 1)
-        chunks = split_into_chunks(text)
-        total_chars = sum(len(c) for c in chunks) or 1
-
-        chunk_start = video_offset
-        for chunk in chunks:
-            chunk_dur = line_dur * (len(chunk) / total_chars)
-            chunk_end = chunk_start + chunk_dur
-            events.append((chunk_start, max(chunk_start + 0.1, chunk_end), chunk))
-            chunk_start = chunk_end
-
-        video_offset += line_dur - (0 if is_last else CROSSFADE_SECS)
-
+def build_ass(word_events: list):
+    """word_events = [(abs_start, abs_end, word), ...] across whole video."""
     dialogue_lines = []
-    for start, end, text in events:
+    for start, end, word in word_events:
         s = format_ass_time(start)
         e = format_ass_time(end)
         dialogue_lines.append(
-            f"Dialogue: 0,{s},{e},Caption,,0,0,0,,{{\\fad(150,50)}}{text}"
+            f"Dialogue: 0,{s},{e},Caption,,0,0,0,,{{\\fad(40,0)}}{word}"
         )
 
     content = (
@@ -157,7 +134,7 @@ def build_ass(captions: list):
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Caption,{FONT_NAME},{FONT_SIZE},"
         f"&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,"
-        f"0,0,0,0,100,100,2,0,1,4,2,2,60,60,{CAPTION_MARGIN_V},1\n"
+        f"1,0,0,0,100,100,2,0,1,6,3,2,60,60,{CAPTION_MARGIN_V},1\n"
         "\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
@@ -174,8 +151,12 @@ def build_segment(
     audio: Optional[Path],
     out: Path,
     zoom_out: bool = False,
+    pad_audio: bool = True,
+    leading_silence: float = 0.0,
 ):
-    frames = int(duration * FPS)
+    pad = SEGMENT_PAD_SECS if (audio and pad_audio) else 0.0
+    effective_duration = leading_silence + duration + pad
+    frames = int(effective_duration * FPS)
 
     scale = (
         f"scale={RES_W * 2}:{RES_H * 2}"
@@ -195,17 +176,21 @@ def build_segment(
     )
     vf = f"{scale},{zoompan}"
 
-    base = ["ffmpeg", "-y", "-loop", "1", "-i", str(image)]
+    base = ["ffmpeg", "-y", "-loop", "1", "-r", str(FPS), "-i", str(image)]
 
     if audio:
         cmd = base + [
             "-i", str(audio),
             "-vf", vf,
-            "-af", "loudnorm",
+            "-af", ",".join(filter(None, [
+                f"adelay={int(leading_silence*1000)}|{int(leading_silence*1000)}" if leading_silence else None,
+                "loudnorm",
+                f"apad=pad_dur={SEGMENT_PAD_SECS}" if pad_audio else None,
+            ])),
             "-c:v", "libx264", "-preset", "fast",
             "-c:a", "aac", "-ar", "44100",
+            "-t", str(effective_duration),
             "-pix_fmt", "yuv420p",
-            "-shortest",
             str(out),
         ]
     else:
@@ -308,29 +293,31 @@ def main():
 
     TMP_SEGS.mkdir(exist_ok=True)
 
-    segments = []
-    captions = []  # [(text, duration), ...] — raw audio duration, no apad
-
-    for idx, line in enumerate(lines):
-        lid  = line["id"]
-        text = line["text"]
-
+    # Collect valid entries first so we know which is last (for apad skip)
+    entries = []
+    for line in lines:
+        lid   = line["id"]
+        text  = line["text"]
         image = find_file(IMAGES_DIR, str(lid), IMAGE_EXTS)
         if not image:
             print(f"  [SKIP] line {lid}: no image in {IMAGES_DIR}/")
             continue
-
         audio    = find_file(AUDIO_DIR, str(lid), AUDIO_EXTS) if AUDIO_DIR.exists() else None
         duration = get_duration(audio) if audio else DEFAULT_LINE_SECS
+        entries.append((lid, text, image, audio, duration))
 
+    segments = []
+
+    for idx, (lid, text, image, audio, duration) in enumerate(entries):
+        is_last = (idx == len(entries) - 1)
         src = audio.name if audio else f"silence ({DEFAULT_LINE_SECS}s)"
         print(f"  Line {lid:2d} [{duration:.1f}s | {src}]")
         print(f"         {text[:80]}{'...' if len(text) > 80 else ''}")
 
         seg_out = TMP_SEGS / f"seg_{lid:03d}.mp4"
-        build_segment(image, duration, audio, seg_out, zoom_out=(idx % 2 == 1))
+        leading = 0.0 if idx == 0 else CROSSFADE_SECS
+        build_segment(image, duration, audio, seg_out, zoom_out=(idx % 2 == 1), pad_audio=not is_last, leading_silence=leading)
         segments.append(seg_out)
-        captions.append((text, duration))
 
     if not segments:
         sys.exit("\n[ERROR] No segments built — check images/ has files named 1.jpg, 2.jpg, ...")
@@ -338,15 +325,22 @@ def main():
     print(f"\nConcatenating {len(segments)} segments with {CROSSFADE_SECS}s crossfades...")
     concat_segments(segments, TMP_CONCAT)
 
+    print("Transcribing word timestamps from final audio...")
+    tmp_audio = Path("tmp_audio.wav")
+    extract_audio(TMP_CONCAT, tmp_audio)
+    whisper = load_whisper()
+    word_events = transcribe_words(whisper, tmp_audio)
+    tmp_audio.unlink(missing_ok=True)
+
     print("Burning captions...")
-    build_ass(captions)
+    build_ass(word_events)
     burn_captions(TMP_CONCAT, CAPTIONS_ASS, OUTPUT)
 
     TMP_CONCAT.unlink(missing_ok=True)
     CAPTIONS_ASS.unlink(missing_ok=True)
     shutil.rmtree(TMP_SEGS, ignore_errors=True)
 
-    print(f"\nDone → {OUTPUT.resolve()}")
+    print(f"\nDone -> {OUTPUT.resolve()}")
 
 
 if __name__ == "__main__":

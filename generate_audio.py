@@ -14,7 +14,7 @@ from pathlib import Path
 SCRIPT_JSON = Path("script.json")
 AUDIO_DIR   = Path("audio")
 VOICE       = "af_heart"   # primary — swap to "af_bella" if this sounds off
-SPEED       = 1.0
+SPEED       = 0.85
 LANG        = "en-us"
 
 MODEL_FILE  = Path("kokoro-v1.0.int8.onnx")   # 88MB int8 — fastest, good quality
@@ -72,7 +72,7 @@ def main():
         samples, sample_rate = kokoro.create(text, voice=VOICE, speed=SPEED, lang=LANG)
         sf.write(str(out), samples, sample_rate)
         duration = len(samples) / sample_rate
-        print(f"          → {out}  ({duration:.2f}s)")
+        print(f"          -> {out}  ({duration:.2f}s)")
 
     print(f"\nDone. Run: python assemble.py")
 
