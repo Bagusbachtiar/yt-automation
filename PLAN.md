@@ -5,17 +5,17 @@
 - [x] Image fetch — `fetch_images.py`, Pexels → Pixabay fallback → `images/`
 - [x] Audio (TTS) — `generate_audio.py`, Kokoro `af_heart` → `audio/`
 - [x] Video assembly — `assemble.py`, ffmpeg, Ken Burns zoom + crossfades → `output.mp4`
+- [x] Captions — word-by-word via faster-whisper on full concatenated audio, Arial Black, bottom-center, 1s gap between TTS sentences, no fade-in on speech
 
 ## In progress
-- [ ] Caption fix — root cause identified (apad + raw-duration timing mismatch causing drift). Captions currently removed. Next: remove `apad`, verify crossfades cover the gap, rebuild ASS captions with correct cumulative timing, then chunk each line into 2-4 shorter caption segments (not one static block per line) using proportional-by-character-count duration split. No Whisper.
+- [ ] Wikipedia-grounded script generation — `wikipedia_fetch.py`, fuzzy search → article summary → injected into prompt as grounded reference
+- [ ] Wikimedia Commons image sourcing — history-niche primary source, public domain/CC0/CC-BY only, Pexels/Pixabay fallback
 
 ## Not started
-- [ ] Telegram approval checkpoints (script review, image review) — n8n wait-for-webhook pattern, not yet wired
-- [ ] YouTube Data API v3 upload step
-- [ ] Wikipedia-grounded scripts for history-niche content (see CLAUDE.md "History-niche extension")
-- [ ] Wikimedia Commons image sourcing for history content
-- [ ] Full n8n orchestration wiring all steps together (currently these are standalone scripts run manually, not yet triggered by n8n end-to-end)
-- [ ] Web dashboard (deliberately deferred to v2 — do not start until Telegram checkpoints are live and their limitations are actually felt)
+- [ ] Telegram approval checkpoints (script review, image review) — n8n wait-for-webhook pattern
+- [ ] YouTube Data API v3 upload step — quota 10k units/day, one upload ≈ 1600 units
+- [ ] Full n8n orchestration wiring all steps together (currently standalone scripts, not triggered by n8n end-to-end)
+- [ ] Web dashboard (deliberately deferred to v2)
 
 ## Next session should start here
-Fix the caption bug (see "In progress" above) — this was the active blocker before this session. Once captions work reliably on the cow/methane test case, move to wiring the Telegram checkpoints so the pipeline can run as one triggered flow instead of manually-run scripts.
+Build `wikipedia_fetch.py` (Wikipedia fuzzy search → article text) and update `script_prompt_template.txt` to inject it as reference. Then update `fetch_images.py` to try Wikimedia Commons first. Test end-to-end on "The Fall of the Berlin Wall."
