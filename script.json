@@ -1,45 +1,46 @@
 {
-  "title": "Why Your Brain Is Addicted to Bad News",
+  "title": "The Fall of the Berlin Wall",
   "lines": [
     {
       "id": 1,
-      "text": "You open your phone to check the time — and 20 minutes later you're still scrolling bad news.",
-      "image_keyword": "person scrolling phone in bed at night"
+      "text": "In August 1989, the opening of the Iron Curtain between Austria and Hungary set off a chain reaction that would eventually lead to the fall of the Berlin Wall.",
+      "image_keyword": "East Germans Pan-European Picnic 1989"
     },
     {
       "id": 2,
-      "text": "This isn't a willpower problem. Your brain is literally wired for it.",
-      "image_keyword": "frustrated woman staring at phone"
+      "text": "Tens of thousands of East Germans took advantage of this newfound freedom, traveling to Hungary and then making their way to West Germany.",
+      "image_keyword": "East German refugees leaving Prague for Bavaria"
     },
     {
       "id": 3,
-      "text": "It's called negativity bias — your brain processes threats faster and stronger than good news.",
-      "image_keyword": "stressed person reading bad news"
+      "text": "The Berlin Wall was a formidable barrier, stretching 155 kilometers across the city and topped with minefields and watchtowers.",
+      "image_keyword": "Berlin Wall watchtower 1989"
     },
     {
       "id": 4,
-      "text": "For thousands of years, missing a threat meant death. Missing good news just meant a missed opportunity.",
-      "image_keyword": "ancient cave painting prehistoric"
+      "text": "Despite its imposing presence, the wall had become increasingly porous, with thousands of people making their way to the West every year.",
+      "image_keyword": "East Germans crossing Berlin Wall illegally"
     },
     {
       "id": 5,
-      "text": "So your brain evolved to prioritize danger. Bad news feels more real, more urgent, more important.",
-      "image_keyword": "worried man reading newspaper headlines"
+      "text": "On October 18, 1989, longtime leader Erich Honecker stepped down in favor of Egon Krenz, who promised reforms but failed to deliver.",
+      "image_keyword": "Erich Honecker East Germany"
     },
     {
       "id": 6,
-      "text": "Social media platforms learned this too — negative posts get more clicks, more shares, more time on screen.",
-      "image_keyword": "person addicted to phone scrolling social media"
+      "text": "As the political situation continued to deteriorate, thousands took to the streets demanding change and calling for Krenz's resignation.",
+      "image_keyword": "Protesters in East Berlin 1989"
     },
     {
       "id": 7,
-      "text": "The result: your ancient survival brain is being hijacked by an algorithm designed to keep you anxious.",
-      "image_keyword": "anxious person alone in dark room"
+      "text": "Finally, on November 9, 1989, the government announced it would allow East Germans to travel to the West without restriction, marking the beginning of the end of the wall.",
+      "image_keyword": "Berlin Wall 1989 demolition"
     },
     {
       "id": 8,
-      "text": "Knowing this doesn't fix it — but it gives you the one thing the algorithm doesn't want you to have: awareness.",
-      "image_keyword": "calm person meditating outdoors at sunrise"
+      "text": "In the end, the fall of the Berlin Wall marked a major turning point in world history, as the Iron Curtain was lifted and a new era of freedom and cooperation began.",
+      "image_keyword": "Berlin Wall falls 1989"
     }
-  ]
+  ],
+  "wiki_title": "Fall of the Berlin Wall"
 }

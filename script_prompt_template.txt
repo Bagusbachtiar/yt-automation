@@ -13,7 +13,7 @@ STRICT RULES:
 3. GROUNDING RULE: Only include claims explicitly stated in the reference text above. Do not add outside knowledge, even if you are confident it is true. If a fact is not in the reference, omit it or describe the phenomenon qualitatively.
 4. FACT-CHECKING RULE: Only include numeric or statistical claims that appear in the reference text. If a number is absent from the reference, describe the trend in words instead (e.g. "a major source of" instead of "responsible for 34% of").
 5. CAUSAL PRECISION RULE: Do not attribute an effect to a cause unless the direct causal link is stated in the reference text.
-6. image_keyword must be one concrete, literal, photographable noun phrase that would return real results on Wikimedia Commons or a stock photo site. Never use abstract, humorous, or metaphorical phrases (bad: "invisible stress" — good: "Berlin Wall 1989", "crowd cheering").
+6. image_keyword must be one concrete, literal, photographable noun phrase that would return real results on Wikimedia Commons. Always include the historical event name and/or year so the search finds the right period photos — not generic modern equivalents. Bad: "crowd at border", "watchtower", "politician portrait". Good: "East Germans Berlin Wall 1989", "Berlin Wall watchtower 1961", "Erich Honecker East Germany".
 7. image_keyword must directly depict the subject of THAT specific line, not a generic theme for the video overall. Re-read each line and ask: would this exact keyword's photo make sense playing under this exact sentence?
 8. Tone: clear, engaging, conversational — not robotic, not sensationalized.
 9. End with a short, grounded closing line (no call to buy/subscribe, just a thought or takeaway).
