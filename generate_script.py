@@ -83,6 +83,7 @@ def main():
     if not lines:
         sys.exit(f"[ERROR] Script has no lines. Raw response:\n{raw[:600]}")
 
+    script["wiki_title"] = wiki_title
     SCRIPT_JSON.write_text(json.dumps(script, indent=2, ensure_ascii=False), encoding="utf-8")
 
     title = script.get("title", "(no title)")

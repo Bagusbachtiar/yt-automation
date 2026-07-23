@@ -136,9 +136,10 @@ def review_line(token: str, chat_id: str, lid: str, data: dict,
     text    = data["text"]
     sources = data["sources"]
     source_order = [
-        ("Commons", sources.get("commons", [])),
-        ("Pexels",  sources.get("pexels",  [])),
-        ("Pixabay", sources.get("pixabay", [])),
+        ("Wikipedia article", sources.get("wikipedia", [])),
+        ("Commons search",    sources.get("commons",   [])),
+        ("Pexels",            sources.get("pexels",    [])),
+        ("Pixabay",           sources.get("pixabay",   [])),
     ]
     available_sources = [(name, urls) for name, urls in source_order if urls]
 

@@ -20,6 +20,8 @@ import urllib.parse
 import urllib.error
 from pathlib import Path
 
+from wikipedia_fetch import fetch_wikipedia_images, is_acceptable_license
+
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE
@@ -51,17 +53,6 @@ def load_env():
 
 
 # ── Wikimedia Commons ─────────────────────────────────────────────────────────
-
-def is_acceptable_license(license_str: str) -> bool:
-    l = license_str.lower().strip()
-    if not l:
-        return False
-    if "public domain" in l or l == "cc0":
-        return True
-    if l.startswith("cc by") and "sa" not in l and "nc" not in l and "nd" not in l:
-        return True
-    return False
-
 
 def commons_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
     try:
@@ -159,11 +150,13 @@ def pixabay_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE)
 
 # ── Candidates ────────────────────────────────────────────────────────────────
 
-def fetch_candidates(query: str, pexels_key: str, pixabay_key: str) -> dict:
+def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
+                     wiki_url: str | None = None) -> dict:
     return {
-        "commons": commons_search(query),
-        "pexels":  pexels_search(query, pexels_key)  if pexels_key  else [],
-        "pixabay": pixabay_search(query, pixabay_key) if pixabay_key else [],
+        "wikipedia": [wiki_url] if wiki_url else [],
+        "commons":   commons_search(query),
+        "pexels":    pexels_search(query, pexels_key)  if pexels_key  else [],
+        "pixabay":   pixabay_search(query, pixabay_key) if pixabay_key else [],
     }
 
 
@@ -201,20 +194,28 @@ def main():
     lines  = script["lines"]
     print(f"\nCollecting candidates for {len(lines)} lines...\n")
 
+    wiki_pool = []
+    wiki_title = script.get("wiki_title", "")
+    if wiki_title:
+        print(f"Fetching Wikipedia article images for '{wiki_title}'...")
+        wiki_pool = fetch_wikipedia_images(wiki_title)
+        print(f"  {len(wiki_pool)} licensed images in pool\n")
+
     IMAGES_DIR.mkdir(exist_ok=True)
     all_candidates = {}
 
-    for line in lines:
+    for idx, line in enumerate(lines):
         lid = line["id"]
         keyword = (
             line.get("image_keyword")
             or (line.get("image_keywords") or [None])[0]
             or line["text"]
         )
+        wiki_url = wiki_pool[idx % len(wiki_pool)] if wiki_pool else None
         print(f"  Line {lid:2d}: {keyword}")
-        c = fetch_candidates(keyword, pexels_key, pixabay_key)
-        total = len(c["commons"]) + len(c["pexels"]) + len(c["pixabay"])
-        print(f"    commons:{len(c['commons'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  total:{total}")
+        c = fetch_candidates(keyword, pexels_key, pixabay_key, wiki_url=wiki_url)
+        total = len(c["wikipedia"]) + len(c["commons"]) + len(c["pexels"]) + len(c["pixabay"])
+        print(f"    wiki:{len(c['wikipedia'])}  commons:{len(c['commons'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  total:{total}")
         all_candidates[str(lid)] = {
             "text":    line["text"],
             "keyword": keyword,
@@ -239,7 +240,7 @@ def main():
                 print(f"  {lid_str}.jpg already exists, skip")
                 continue
             sources = data["sources"]
-            url = (sources["commons"] or sources["pexels"] or sources["pixabay"] or [None])[0]
+            url = (sources["wikipedia"] or sources["commons"] or sources["pexels"] or sources["pixabay"] or [None])[0]
             if not url:
                 print(f"  Line {lid_str}: no result from any source")
                 failed += 1
