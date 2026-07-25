@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Telegram image review — send candidate photos per script line, human picks one.
+Telegram image review — show all candidates at once, assign each to a line.
 
 Reads:   image_candidates.json  (from fetch_images.py)
 Saves:   images/{id}.jpg        (chosen image per line)
@@ -8,10 +8,10 @@ Saves:   images/{id}.jpg        (chosen image per line)
 Usage:   python review_images.py
 Env:     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  (in .env)
 
-Review flow per line:
-  1. Bot shows up to 3 Commons photos — reply 1/2/3 to pick, or "next" for Pexels
-  2. Bot shows up to 3 Pexels photos  — reply 1/2/3 to pick, or "next" for Pixabay
-  3. Bot shows up to 3 Pixabay photos — reply 1/2/3 to pick, or "skip" to leave blank
+Flow:
+  1. Bot sends up to 20 images numbered #1-#N (best sources first, deduped)
+  2. For each line: bot shows line text + keyword, you reply with a number
+  3. Commands: number to assign, 'skip' to leave blank, 'quit' to stop
 """
 
 import json
@@ -28,9 +28,11 @@ _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE
 
-TG_API           = "https://api.telegram.org"
-CANDIDATES_JSON  = Path("image_candidates.json")
-IMAGES_DIR       = Path("images")
+TG_API          = "https://api.telegram.org"
+CANDIDATES_JSON = Path("image_candidates.json")
+IMAGES_DIR      = Path("images")
+MAX_POOL        = 20
+SOURCE_PRIORITY = ["wikipedia", "wiki_keyword", "flickr", "commons", "pexels", "pixabay"]
 
 
 # ── Env loader ────────────────────────────────────────────────────────────────
@@ -79,7 +81,6 @@ def send_photo(token: str, chat_id: str, img_bytes: bytes, caption: str = ""):
 
 
 def drain_updates(token: str) -> int:
-    """Ack all pending updates so old messages don't trigger review. Returns last seen update_id."""
     resp = _tg(token, "getUpdates", {"timeout": 0})
     results = resp.get("result", [])
     if not results:
@@ -90,7 +91,6 @@ def drain_updates(token: str) -> int:
 
 
 def wait_for_reply(token: str, chat_id: str, after_id: int) -> tuple[str, int]:
-    """Long-poll until a text message arrives from chat_id. Returns (text.lower(), update_id)."""
     update_id = after_id
     while True:
         try:
@@ -125,67 +125,21 @@ def fetch_bytes(url: str) -> bytes:
     raise RuntimeError("fetch_bytes: unreachable")
 
 
-# ── Review loop ───────────────────────────────────────────────────────────────
+# ── Pool builder ──────────────────────────────────────────────────────────────
 
-def review_line(token: str, chat_id: str, lid: str, data: dict,
-                update_id: int, total: int) -> tuple[str | None, int]:
-    """
-    Show candidate photos from each source in order.
-    Returns (chosen_url | None, update_id).
-    """
-    text    = data["text"]
-    sources = data["sources"]
-    source_order = [
-        ("Wikipedia article", sources.get("wikipedia", [])),
-        ("Commons search",    sources.get("commons",   [])),
-        ("Pexels",            sources.get("pexels",    [])),
-        ("Pixabay",           sources.get("pixabay",   [])),
-    ]
-    available_sources = [(name, urls) for name, urls in source_order if urls]
-
-    send_message(token, chat_id,
-        f"Line {lid}/{total}\n\"{text}\"\nKeyword: {data['keyword']}"
-    )
-
-    for src_idx, (src_name, urls) in enumerate(available_sources):
-        is_last_source = (src_idx == len(available_sources) - 1)
-
-        send_message(token, chat_id, f"--- {src_name} options ---")
-
-        loaded_urls = []
-        for i, url in enumerate(urls, 1):
-            try:
-                img_bytes = fetch_bytes(url)
-                send_photo(token, chat_id, img_bytes, caption=f"Option {i}")
-                loaded_urls.append(url)
-            except Exception as e:
-                send_message(token, chat_id, f"Option {i} failed to load: {e}")
-
-        if not loaded_urls:
-            send_message(token, chat_id, f"No loadable images from {src_name}.")
-            continue
-
-        opts = "/".join(str(i) for i in range(1, len(loaded_urls) + 1))
-        if is_last_source:
-            prompt = f"Reply {opts} to pick, or 'skip' to leave this line blank."
-        else:
-            next_src = available_sources[src_idx + 1][0]
-            prompt = f"Reply {opts} to pick, or 'next' for {next_src} options, or 'skip' to leave blank."
-        send_message(token, chat_id, prompt)
-
-        while True:
-            reply, update_id = wait_for_reply(token, chat_id, update_id)
-            if reply.isdigit() and 1 <= int(reply) <= len(loaded_urls):
-                return loaded_urls[int(reply) - 1], update_id
-            elif reply == "next" and not is_last_source:
-                break
-            elif reply == "skip":
-                return None, update_id
-            else:
-                send_message(token, chat_id, f"Not recognized. Reply {opts}, 'next', or 'skip'.")
-
-    send_message(token, chat_id, "No sources had loadable images for this line.")
-    return None, update_id
+def collect_pool(candidates: dict, max_images: int = MAX_POOL) -> list[tuple[str, str]]:
+    """Collect unique URLs across all lines, best sources first. Returns [(src, url), ...]."""
+    seen = set()
+    pool = []
+    for source in SOURCE_PRIORITY:
+        for data in candidates.values():
+            for url in data["sources"].get(source, []):
+                if url and url not in seen:
+                    seen.add(url)
+                    pool.append((source, url))
+                    if len(pool) >= max_images:
+                        return pool
+    return pool
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -205,7 +159,6 @@ def main():
     candidates = json.loads(CANDIDATES_JSON.read_text(encoding="utf-8"))
     IMAGES_DIR.mkdir(exist_ok=True)
 
-    # Figure out which lines still need images
     pending = {
         lid: data for lid, data in candidates.items()
         if not (IMAGES_DIR / f"{lid}.jpg").exists()
@@ -214,37 +167,72 @@ def main():
         print("All images already present. Nothing to review.")
         return
 
-    total = len(candidates)
-    print(f"Reviewing {len(pending)} lines via Telegram...\n")
+    print(f"Building image pool...")
+    pool_entries = collect_pool(candidates)
 
-    # Drain old Telegram messages so stale replies don't trigger anything
-    update_id = drain_updates(token)
+    # Step 1 — send all images
+    send_message(token, chat_id,
+        f"Sending {len(pool_entries)} images — note the numbers, then assign each line."
+    )
+    loaded = []  # (src, url)
+    for src, url in pool_entries:
+        try:
+            img_bytes = fetch_bytes(url)
+            num = len(loaded) + 1
+            send_photo(token, chat_id, img_bytes, caption=f"#{num} — {src}")
+            loaded.append((src, url))
+            print(f"  #{num} uploaded ({src})")
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"  failed ({src}): {e}")
+
+    if not loaded:
+        send_message(token, chat_id, "No images loaded. Aborting.")
+        return
 
     send_message(token, chat_id,
-        f"Image review started — {len(pending)} line(s) to review.\n"
-        f"Commands: reply a number to pick, 'next' to see next source, 'skip' to skip line."
+        f"{len(loaded)} images ready. Now assign each line.\n"
+        f"Commands: reply number (1-{len(loaded)}) to assign, 'skip', or 'quit'."
     )
 
+    # Drain stale messages accumulated while uploading
+    update_id = drain_updates(token)
+
+    # Step 2 — assign per line
     ok = skipped = 0
-
     for lid, data in pending.items():
-        chosen_url, update_id = review_line(token, chat_id, lid, data, update_id, total)
-
-        dest = IMAGES_DIR / f"{lid}.jpg"
-        if chosen_url:
-            try:
-                img_bytes = fetch_bytes(chosen_url)
-                dest.write_bytes(img_bytes)
-                send_message(token, chat_id, f"Saved line {lid}. ({dest.stat().st_size // 1024} KB)")
-                print(f"  Line {lid}: saved ({dest.stat().st_size // 1024} KB)")
-                ok += 1
-            except Exception as e:
-                send_message(token, chat_id, f"Download failed for line {lid}: {e}")
-                print(f"  Line {lid}: download failed — {e}")
-        else:
-            send_message(token, chat_id, f"Skipped line {lid} — no image.")
-            print(f"  Line {lid}: skipped")
-            skipped += 1
+        send_message(token, chat_id,
+            f"Line {lid}/{len(candidates)}: \"{data['text']}\"\n"
+            f"Keyword: {data['keyword']}\n"
+            f"Reply 1-{len(loaded)}, 'skip', or 'quit'."
+        )
+        while True:
+            reply, update_id = wait_for_reply(token, chat_id, update_id)
+            if reply == "quit":
+                send_message(token, chat_id, "Review stopped. Run again to continue.")
+                print("\nReview stopped by user.")
+                print(f"Done. Saved={ok}  Skipped={skipped}")
+                return
+            elif reply == "skip":
+                send_message(token, chat_id, f"Line {lid} skipped.")
+                print(f"  Line {lid}: skipped")
+                skipped += 1
+                break
+            elif reply.isdigit() and 1 <= int(reply) <= len(loaded):
+                chosen_url = loaded[int(reply) - 1][1]
+                dest = IMAGES_DIR / f"{lid}.jpg"
+                try:
+                    img_bytes = fetch_bytes(chosen_url)
+                    dest.write_bytes(img_bytes)
+                    send_message(token, chat_id, f"Line {lid} saved. ({dest.stat().st_size // 1024} KB)")
+                    print(f"  Line {lid}: saved ({dest.stat().st_size // 1024} KB)")
+                    ok += 1
+                except Exception as e:
+                    send_message(token, chat_id, f"Download failed: {e} — pick another or 'skip'.")
+                    continue
+                break
+            else:
+                send_message(token, chat_id, f"Not recognized. Reply 1-{len(loaded)}, 'skip', or 'quit'.")
 
     send_message(token, chat_id,
         f"Review done. Saved={ok}  Skipped={skipped}\n"

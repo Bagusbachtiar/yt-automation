@@ -1,46 +1,54 @@
 {
-  "title": "The Fall of the Berlin Wall",
+  "title": "Apollo 11: A Giant Leap for Mankind",
   "lines": [
     {
       "id": 1,
-      "text": "In August 1989, the opening of the Iron Curtain between Austria and Hungary set off a chain reaction that would eventually lead to the fall of the Berlin Wall.",
-      "image_keyword": "East Germans Pan-European Picnic 1989"
+      "text": "In July 1969, NASA's Apollo 11 mission made history by landing humans on the Moon.",
+      "image_keyword": "Neil Armstrong Apollo 11 moon surface 1969",
+      "image_keyword_fallback": "Apollo 11 lunar module Eagle"
     },
     {
       "id": 2,
-      "text": "Tens of thousands of East Germans took advantage of this newfound freedom, traveling to Hungary and then making their way to West Germany.",
-      "image_keyword": "East German refugees leaving Prague for Bavaria"
+      "text": "The mission was crewed by Commander Neil Armstrong, Command Module Pilot Michael Collins, and Lunar Module Pilot Edwin 'Buzz' Aldrin.",
+      "image_keyword": "Apollo 11 astronauts Neil Armstrong Buzz Aldrin",
+      "image_keyword_fallback": "Apollo 11 spacecraft command module"
     },
     {
       "id": 3,
-      "text": "The Berlin Wall was a formidable barrier, stretching 155 kilometers across the city and topped with minefields and watchtowers.",
-      "image_keyword": "Berlin Wall watchtower 1989"
+      "text": "Launched from Kennedy Space Center in Florida on July 16th, the Apollo spacecraft consisted of three parts: the command module, service module, and lunar module.",
+      "image_keyword": "Saturn V rocket Kennedy Space Center",
+      "image_keyword_fallback": "Apollo spacecraft components"
     },
     {
       "id": 4,
-      "text": "Despite its imposing presence, the wall had become increasingly porous, with thousands of people making their way to the West every year.",
-      "image_keyword": "East Germans crossing Berlin Wall illegally"
+      "text": "After a three-day transit, Armstrong and Aldrin descended to the surface aboard the lunar module Eagle, landing in the Sea of Tranquility on July 20th.",
+      "image_keyword": "Neil Armstrong Buzz Aldrin moonwalk",
+      "image_keyword_fallback": "Apollo 11 lunar module Eagle landing"
     },
     {
       "id": 5,
-      "text": "On October 18, 1989, longtime leader Erich Honecker stepped down in favor of Egon Krenz, who promised reforms but failed to deliver.",
-      "image_keyword": "Erich Honecker East Germany"
+      "text": "Armstrong became the first human to walk on the Moon, followed by Aldrin nineteen minutes later.",
+      "image_keyword": "Neil Armstrong Apollo 11 moon surface flag",
+      "image_kernel_fallback": "Apollo 11 astronauts moonwalk"
     },
     {
       "id": 6,
-      "text": "As the political situation continued to deteriorate, thousands took to the streets demanding change and calling for Krenz's resignation.",
-      "image_keyword": "Protesters in East Berlin 1989"
+      "text": "Together they spent around two and a half hours walking on the surface, planting an American flag, speaking by telephone with President Richard Nixon, deploying scientific instruments, and collecting lunar material.",
+      "image_keyword": "Buzz Aldrin Apollo 11 moon surface",
+      "image_kernel_fallback": "Apollo 11 astronauts moonwalk"
     },
     {
       "id": 7,
-      "text": "Finally, on November 9, 1989, the government announced it would allow East Germans to travel to the West without restriction, marking the beginning of the end of the wall.",
-      "image_keyword": "Berlin Wall 1989 demolition"
+      "text": "The mission's success marked a major achievement for NASA and the United States, fulfilling President John F. Kennedy's challenge to land a man on the Moon before the end of the decade.",
+      "image_keyword": "John F. Kennedy space speech",
+      "image_kernel_fallback": "President Kennedy moon goal"
     },
     {
       "id": 8,
-      "text": "In the end, the fall of the Berlin Wall marked a major turning point in world history, as the Iron Curtain was lifted and a new era of freedom and cooperation began.",
-      "image_keyword": "Berlin Wall falls 1989"
+      "text": "The Apollo 11 mission also marked a historic moment in the Space Race between the United States and the Soviet Union.",
+      "image_keyword": "Cold War era USA Soviet Union",
+      "image_kernel_fallback": "Apollo 11 space race"
     }
   ],
-  "wiki_title": "Fall of the Berlin Wall"
+  "wiki_title": "Apollo 11"
 }

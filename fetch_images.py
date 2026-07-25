@@ -12,6 +12,7 @@ Run:  python fetch_images.py
 
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -20,13 +21,15 @@ import urllib.parse
 import urllib.error
 from pathlib import Path
 
-from wikipedia_fetch import fetch_wikipedia_images, is_acceptable_license
+from wikipedia_fetch import fetch_wikipedia_images, is_acceptable_license, search_wikipedia
 
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE
 
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
+FLICKR_API  = "https://api.flickr.com/services/rest/"
+LOC_API     = "https://www.loc.gov/photos/"
 COMMONS_IMAGE_EXTS = (".jpg", ".jpeg", ".png")
 CANDIDATES_PER_SOURCE = 3
 
@@ -96,6 +99,96 @@ def commons_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
     return []
 
 
+# ── Relevance filter ──────────────────────────────────────────────────────────
+
+_STOP = {"the", "a", "an", "of", "in", "at", "to", "for", "and", "or", "is", "was", "by"}
+
+def _relevant_overlap(query: str, candidate: str, min_matches: int = 1) -> bool:
+    terms = {w.lower() for w in re.split(r"\W+", query) if len(w) >= 4 and w.lower() not in _STOP}
+    if not terms:
+        return True
+    c = candidate.lower()
+    hits = sum(1 for t in terms if t in c)
+    return hits >= min(min_matches, len(terms))
+
+
+# ── Wikipedia keyword search (per-line) ──────────────────────────────────────
+
+def wikipedia_keyword_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
+    title = search_wikipedia(query)
+    if not title or not _relevant_overlap(query, title):
+        return []
+    return fetch_wikipedia_images(title, limit=limit)
+
+
+# ── Flickr Commons ───────────────────────────────────────────────────────────
+
+def flickr_commons_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
+    params = urllib.parse.urlencode({
+        "method":         "flickr.photos.search",
+        "api_key":        api_key,
+        "text":           query,
+        "license":        "7,9,10",  # no known copyright / CC0 / public domain mark
+        "extras":         "url_l,url_m",
+        "per_page":       limit * 3,
+        "page":           1,
+        "sort":           "relevance",
+        "format":         "json",
+        "nojsoncallback": 1,
+    })
+    try:
+        req = urllib.request.Request(
+            f"{FLICKR_API}?{params}",
+            headers={"User-Agent": "yt-automation/1.0 (bagusbachtiar50@gmail.com)"},
+        )
+        with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as resp:
+            data = json.loads(resp.read())
+        photos = data.get("photos", {}).get("photo", [])
+        urls = []
+        for p in photos:
+            url = p.get("url_l") or p.get("url_m")
+            if url:
+                urls.append(url)
+                if len(urls) >= limit:
+                    break
+        return urls
+    except Exception as e:
+        print(f"    [Flickr] error: {e}")
+    return []
+
+
+# ── Library of Congress ───────────────────────────────────────────────────────
+
+def loc_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
+    params = urllib.parse.urlencode({
+        "q":  query,
+        "fo": "json",
+        "c":  limit * 3,
+    })
+    try:
+        req = urllib.request.Request(
+            f"{LOC_API}?{params}",
+            headers={"User-Agent": "yt-automation/1.0 (bagusbachtiar50@gmail.com)"},
+        )
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+            data = json.loads(resp.read())
+        results = data.get("results", [])
+        urls = []
+        for item in results:
+            image_url = item.get("image_url")
+            if not image_url:
+                continue
+            url = (image_url[-1] if isinstance(image_url, list) else image_url).split("#")[0]
+            if url and any(url.lower().split("?")[0].endswith(ext) for ext in COMMONS_IMAGE_EXTS):
+                urls.append(url)
+                if len(urls) >= limit:
+                    break
+        return urls
+    except Exception as e:
+        print(f"    [LoC] error: {e}")
+    return []
+
+
 # ── Pexels ────────────────────────────────────────────────────────────────────
 
 def pexels_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
@@ -151,12 +244,14 @@ def pixabay_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE)
 # ── Candidates ────────────────────────────────────────────────────────────────
 
 def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
-                     wiki_url: str | None = None) -> dict:
+                     flickr_key: str = "", wiki_url: str | None = None) -> dict:
     return {
-        "wikipedia": [wiki_url] if wiki_url else [],
-        "commons":   commons_search(query),
-        "pexels":    pexels_search(query, pexels_key)  if pexels_key  else [],
-        "pixabay":   pixabay_search(query, pixabay_key) if pixabay_key else [],
+        "wikipedia":    [wiki_url] if wiki_url else [],
+        "wiki_keyword": wikipedia_keyword_search(query),
+        "flickr":       flickr_commons_search(query, flickr_key) if flickr_key else [],
+        "commons":      commons_search(query),
+        "pexels":       pexels_search(query, pexels_key)   if pexels_key   else [],
+        "pixabay":      pixabay_search(query, pixabay_key) if pixabay_key  else [],
     }
 
 
@@ -183,10 +278,11 @@ def main():
     load_env()
     pexels_key  = os.environ.get("PEXELS_API_KEY",  "").strip()
     pixabay_key = os.environ.get("PIXABAY_API_KEY", "").strip()
+    flickr_key  = os.environ.get("FLICKR_API_KEY",  "").strip()
     tg_token    = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 
-    if not pexels_key and not pixabay_key:
-        sys.exit("[ERROR] No API keys. Set PEXELS_API_KEY and/or PIXABAY_API_KEY in .env")
+    if not pexels_key and not pixabay_key and not flickr_key:
+        sys.exit("[ERROR] No API keys. Set PEXELS_API_KEY, PIXABAY_API_KEY, or FLICKR_API_KEY in .env")
     if not SCRIPT_JSON.exists():
         sys.exit(f"[ERROR] {SCRIPT_JSON} not found.")
 
@@ -211,11 +307,15 @@ def main():
             or (line.get("image_keywords") or [None])[0]
             or line["text"]
         )
+        fallback_keyword = line.get("image_keyword_fallback", "")
         wiki_url = wiki_pool[idx % len(wiki_pool)] if wiki_pool else None
         print(f"  Line {lid:2d}: {keyword}")
-        c = fetch_candidates(keyword, pexels_key, pixabay_key, wiki_url=wiki_url)
-        total = len(c["wikipedia"]) + len(c["commons"]) + len(c["pexels"]) + len(c["pixabay"])
-        print(f"    wiki:{len(c['wikipedia'])}  commons:{len(c['commons'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  total:{total}")
+        c = fetch_candidates(keyword, pexels_key, pixabay_key, flickr_key=flickr_key, wiki_url=wiki_url)
+        if not c["wiki_keyword"] and fallback_keyword and fallback_keyword != keyword:
+            print(f"    [fallback] no wiki match — trying: {fallback_keyword}")
+            c["wiki_keyword"] = wikipedia_keyword_search(fallback_keyword)
+        total = sum(len(v) for v in c.values())
+        print(f"    wiki:{len(c['wikipedia'])}  wiki_kw:{len(c['wiki_keyword'])}  flickr:{len(c['flickr'])}  commons:{len(c['commons'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  total:{total}")
         all_candidates[str(lid)] = {
             "text":    line["text"],
             "keyword": keyword,
@@ -240,14 +340,16 @@ def main():
                 print(f"  {lid_str}.jpg already exists, skip")
                 continue
             sources = data["sources"]
-            url = (sources["wikipedia"] or sources["commons"] or sources["pexels"] or sources["pixabay"] or [None])[0]
+            url = (sources["wikipedia"] or sources["wiki_keyword"] or sources["flickr"] or sources["commons"] or sources["pexels"] or sources["pixabay"] or [None])[0]
             if not url:
                 print(f"  Line {lid_str}: no result from any source")
                 failed += 1
                 continue
             try:
                 download(url, dest)
-                src = "commons" if url in sources["commons"] else ("pexels" if url in sources["pexels"] else "pixabay")
+                for src in ("wikipedia", "wiki_keyword", "flickr", "commons", "pexels", "pixabay"):
+                    if url in sources.get(src, []):
+                        break
                 print(f"  {lid_str}.jpg  ({src}, {dest.stat().st_size // 1024} KB)")
                 ok += 1
             except Exception as e:

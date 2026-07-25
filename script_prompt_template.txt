@@ -14,7 +14,9 @@ STRICT RULES:
 4. FACT-CHECKING RULE: Only include numeric or statistical claims that appear in the reference text. If a number is absent from the reference, describe the trend in words instead (e.g. "a major source of" instead of "responsible for 34% of").
 5. CAUSAL PRECISION RULE: Do not attribute an effect to a cause unless the direct causal link is stated in the reference text.
 6. image_keyword must be one concrete, literal, photographable noun phrase that would return real results on Wikimedia Commons. Always include the historical event name and/or year so the search finds the right period photos — not generic modern equivalents. Bad: "crowd at border", "watchtower", "politician portrait". Good: "East Germans Berlin Wall 1989", "Berlin Wall watchtower 1961", "Erich Honecker East Germany".
+   AVOID ambiguous compound or single words that a search engine can match on a generic sub-word: "moonwalk" matches pedestrians, "picnic" matches modern picnics, "walk" matches sidewalks. Instead use the full proper noun + context: write "Neil Armstrong Apollo 11 moon surface 1969" not "Neil Armstrong moonwalk"; "Pan-European Picnic Hungary border 1989" not "East Germans picnic".
 7. image_keyword must directly depict the subject of THAT specific line, not a generic theme for the video overall. Re-read each line and ask: would this exact keyword's photo make sense playing under this exact sentence?
+8. image_keyword_fallback: a broader, more archive-searchable alternative for lines where the specific event may have little photo coverage. Widen scope slightly — e.g. if "East Germans Pan-European Picnic 1989" has no photos, use "East German refugees Hungary 1989" or "Hungary Austria border 1989". The fallback should still be historically accurate and period-specific.
 8. Tone: clear, engaging, conversational — not robotic, not sensationalized.
 9. End with a short, grounded closing line (no call to buy/subscribe, just a thought or takeaway).
 10. Write ORIGINAL narration in your own words inspired by the facts. Do not copy Wikipedia text directly — rewrite it as spoken narration.
@@ -23,7 +25,7 @@ Output format (JSON only, no other text):
 {
   "title": "short catchy video title",
   "lines": [
-    {"id": 1, "text": "line of narration here", "image_keyword": "concrete photographable phrase"},
-    {"id": 2, "text": "...", "image_keyword": "..."}
+    {"id": 1, "text": "line of narration here", "image_keyword": "concrete photographable phrase", "image_keyword_fallback": "broader fallback phrase"},
+    {"id": 2, "text": "...", "image_keyword": "...", "image_keyword_fallback": "..."}
   ]
 }
