@@ -32,7 +32,8 @@ TG_API          = "https://api.telegram.org"
 CANDIDATES_JSON = Path("image_candidates.json")
 IMAGES_DIR      = Path("images")
 MAX_POOL        = 20
-SOURCE_PRIORITY = ["wikipedia", "wiki_keyword", "flickr", "commons", "pexels", "pixabay"]
+SOURCE_PRIORITY = ["pexels_video", "pexels", "pixabay", "wikipedia", "wiki_keyword", "flickr", "commons"]
+_VIDEO_SOURCES  = {"pexels_video"}
 
 
 # ── Env loader ────────────────────────────────────────────────────────────────
@@ -112,14 +113,19 @@ def wait_for_reply(token: str, chat_id: str, after_id: int) -> tuple[str, int]:
 # ── Image fetch ───────────────────────────────────────────────────────────────
 
 def fetch_bytes(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "yt-automation/1.0"})
-    for attempt in range(2):
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "yt-automation/1.0 (bagusbachtiar50@gmail.com)"}
+    )
+    delays = [10, 30]
+    for attempt in range(3):
         try:
-            with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as r:
+            with urllib.request.urlopen(req, timeout=60, context=_SSL_CTX) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt == 0:
-                time.sleep(5)
+            if e.code == 429 and attempt < 2:
+                wait = delays[attempt]
+                print(f"    [429] waiting {wait}s...")
+                time.sleep(wait)
             else:
                 raise
     raise RuntimeError("fetch_bytes: unreachable")
@@ -127,16 +133,23 @@ def fetch_bytes(url: str) -> bytes:
 
 # ── Pool builder ──────────────────────────────────────────────────────────────
 
-def collect_pool(candidates: dict, max_images: int = MAX_POOL) -> list[tuple[str, str]]:
-    """Collect unique URLs across all lines, best sources first. Returns [(src, url), ...]."""
+def collect_pool(candidates: dict, max_images: int = MAX_POOL) -> list[tuple]:
+    """Returns [(src, url, thumb), ...]. thumb is preview URL for videos, None for images."""
     seen = set()
     pool = []
     for source in SOURCE_PRIORITY:
         for data in candidates.values():
-            for url in data["sources"].get(source, []):
+            for entry in data["sources"].get(source, []):
+                if source in _VIDEO_SOURCES:
+                    url   = entry.get("url", "")   if isinstance(entry, dict) else entry
+                    thumb = entry.get("thumb")      if isinstance(entry, dict) else None
+                    if not thumb:
+                        continue  # skip video with no thumbnail — can't preview in Telegram
+                else:
+                    url, thumb = entry, None
                 if url and url not in seen:
                     seen.add(url)
-                    pool.append((source, url))
+                    pool.append((source, url, thumb))
                     if len(pool) >= max_images:
                         return pool
     return pool
@@ -162,36 +175,40 @@ def main():
     pending = {
         lid: data for lid, data in candidates.items()
         if not (IMAGES_DIR / f"{lid}.jpg").exists()
+        and not (IMAGES_DIR / f"{lid}.mp4").exists()
     }
     if not pending:
-        print("All images already present. Nothing to review.")
+        print("All media already present. Nothing to review.")
         return
 
-    print(f"Building image pool...")
+    print(f"Building media pool...")
     pool_entries = collect_pool(candidates)
 
-    # Step 1 — send all images
+    # Step 1 — send all previews
     send_message(token, chat_id,
-        f"Sending {len(pool_entries)} images — note the numbers, then assign each line."
+        f"Sending {len(pool_entries)} media — note the numbers, then assign each line.\n"
+        f"[VIDEO] items show thumbnail; actual video clip saved when you pick."
     )
-    loaded = []  # (src, url)
-    for src, url in pool_entries:
+    loaded = []  # (src, url, is_video)
+    for src, url, thumb in pool_entries:
+        is_video = src in _VIDEO_SOURCES
         try:
-            img_bytes = fetch_bytes(url)
+            preview_bytes = fetch_bytes(thumb if (is_video and thumb) else url)
             num = len(loaded) + 1
-            send_photo(token, chat_id, img_bytes, caption=f"#{num} — {src}")
-            loaded.append((src, url))
+            label = f"#{num} — {src}" + (" [VIDEO]" if is_video else "")
+            send_photo(token, chat_id, preview_bytes, caption=label)
+            loaded.append((src, url, is_video))
             print(f"  #{num} uploaded ({src})")
-            time.sleep(0.5)
+            time.sleep(1.5)
         except Exception as e:
             print(f"  failed ({src}): {e}")
 
     if not loaded:
-        send_message(token, chat_id, "No images loaded. Aborting.")
+        send_message(token, chat_id, "No media loaded. Aborting.")
         return
 
     send_message(token, chat_id,
-        f"{len(loaded)} images ready. Now assign each line.\n"
+        f"{len(loaded)} items ready. Now assign each line.\n"
         f"Commands: reply number (1-{len(loaded)}) to assign, 'skip', or 'quit'."
     )
 
@@ -219,11 +236,12 @@ def main():
                 skipped += 1
                 break
             elif reply.isdigit() and 1 <= int(reply) <= len(loaded):
-                chosen_url = loaded[int(reply) - 1][1]
-                dest = IMAGES_DIR / f"{lid}.jpg"
+                chosen_src, chosen_url, chosen_is_video = loaded[int(reply) - 1]
+                ext = ".mp4" if chosen_is_video else ".jpg"
+                dest = IMAGES_DIR / f"{lid}{ext}"
                 try:
-                    img_bytes = fetch_bytes(chosen_url)
-                    dest.write_bytes(img_bytes)
+                    media_bytes = fetch_bytes(chosen_url)
+                    dest.write_bytes(media_bytes)
                     send_message(token, chat_id, f"Line {lid} saved. ({dest.stat().st_size // 1024} KB)")
                     print(f"  Line {lid}: saved ({dest.stat().st_size // 1024} KB)")
                     ok += 1

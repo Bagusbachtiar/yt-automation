@@ -13,7 +13,7 @@ from pathlib import Path
 
 SCRIPT_JSON = Path("script.json")
 AUDIO_DIR   = Path("audio")
-VOICE       = "af_heart"   # primary — swap to "af_bella" if this sounds off
+VOICE       = "bf_emma"    # natural British female — documentary style
 SPEED       = 0.85
 LANG        = "en-us"
 

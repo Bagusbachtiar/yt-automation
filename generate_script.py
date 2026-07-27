@@ -27,6 +27,7 @@ def call_ollama(prompt: str) -> str:
         "model": OLLAMA_MODEL,
         "prompt": prompt,
         "stream": False,
+        "options": {"num_predict": 2048},
     }).encode()
     req = urllib.request.Request(
         OLLAMA_URL,

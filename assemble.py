@@ -33,6 +33,7 @@ FONT_SIZE = 90
 CAPTION_MARGIN_V = 260
 ZOOM_SPEED = 0.0015
 MAX_ZOOM = 1.5
+CAPTION_OFFSET_SECS = 0.15  # shift captions later to match actual speech onset
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_JSON  = Path("script.json")
@@ -44,6 +45,7 @@ TMP_CONCAT   = Path("tmp_concat.mp4")
 CAPTIONS_ASS = Path("captions.ass")
 
 IMAGE_EXTS = [".jpg", ".jpeg", ".png", ".webp"]
+VIDEO_EXTS = [".mp4"]
 AUDIO_EXTS = [".wav", ".mp3", ".m4a", ".ogg"]
 
 
@@ -116,8 +118,8 @@ def build_ass(word_events: list):
     """word_events = [(abs_start, abs_end, word), ...] across whole video."""
     dialogue_lines = []
     for start, end, word in word_events:
-        s = format_ass_time(start)
-        e = format_ass_time(end)
+        s = format_ass_time(start + CAPTION_OFFSET_SECS)
+        e = format_ass_time(end + CAPTION_OFFSET_SECS)
         dialogue_lines.append(
             f"Dialogue: 0,{s},{e},Caption,,0,0,0,,{{\\fad(40,0)}}{word}"
         )
@@ -200,6 +202,61 @@ def build_segment(
             "-c:v", "libx264", "-preset", "fast",
             "-c:a", "aac", "-ar", "44100",
             "-t", str(duration),
+            "-pix_fmt", "yuv420p",
+            str(out),
+        ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"\n[ffmpeg stderr — {out.stem}]\n{result.stderr[-3000:]}")
+        raise RuntimeError(f"Segment build failed: {out.stem}")
+
+
+def build_video_segment(
+    clip: Path,
+    duration: float,
+    audio: Optional[Path],
+    out: Path,
+    pad_audio: bool = True,
+    leading_silence: float = 0.0,
+):
+    pad = SEGMENT_PAD_SECS if (audio and pad_audio) else 0.0
+    effective_duration = leading_silence + duration + pad
+
+    clip_dur = get_duration(clip)
+    loop = ["-stream_loop", "-1"] if clip_dur < effective_duration else []
+
+    vf = (
+        f"scale={RES_W}:{RES_H}:force_original_aspect_ratio=increase,"
+        f"crop={RES_W}:{RES_H},fps={FPS}"
+    )
+
+    base = ["ffmpeg", "-y"] + loop + ["-i", str(clip)]
+
+    if audio:
+        af = ",".join(filter(None, [
+            f"adelay={int(leading_silence * 1000)}|{int(leading_silence * 1000)}" if leading_silence else None,
+            "loudnorm",
+            f"apad=pad_dur={SEGMENT_PAD_SECS}" if pad_audio else None,
+        ]))
+        cmd = base + [
+            "-i", str(audio),
+            "-vf", vf, "-af", af,
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-preset", "fast",
+            "-c:a", "aac", "-ar", "44100",
+            "-t", str(effective_duration),
+            "-pix_fmt", "yuv420p",
+            str(out),
+        ]
+    else:
+        cmd = base + [
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            "-vf", vf,
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-preset", "fast",
+            "-c:a", "aac", "-ar", "44100",
+            "-t", str(effective_duration),
             "-pix_fmt", "yuv420p",
             str(out),
         ]
@@ -296,27 +353,34 @@ def main():
     # Collect valid entries first so we know which is last (for apad skip)
     entries = []
     for line in lines:
-        lid   = line["id"]
-        text  = line["text"]
-        image = find_file(IMAGES_DIR, str(lid), IMAGE_EXTS)
-        if not image:
-            print(f"  [SKIP] line {lid}: no image in {IMAGES_DIR}/")
+        lid      = line["id"]
+        text     = line["text"]
+        video    = find_file(IMAGES_DIR, str(lid), VIDEO_EXTS)
+        image    = find_file(IMAGES_DIR, str(lid), IMAGE_EXTS)
+        media    = video or image
+        if not media:
+            print(f"  [SKIP] line {lid}: no image or video in {IMAGES_DIR}/")
             continue
+        is_video = media.suffix == ".mp4"
         audio    = find_file(AUDIO_DIR, str(lid), AUDIO_EXTS) if AUDIO_DIR.exists() else None
         duration = get_duration(audio) if audio else DEFAULT_LINE_SECS
-        entries.append((lid, text, image, audio, duration))
+        entries.append((lid, text, media, audio, duration, is_video))
 
     segments = []
 
-    for idx, (lid, text, image, audio, duration) in enumerate(entries):
+    for idx, (lid, text, media, audio, duration, is_video) in enumerate(entries):
         is_last = (idx == len(entries) - 1)
-        src = audio.name if audio else f"silence ({DEFAULT_LINE_SECS}s)"
-        print(f"  Line {lid:2d} [{duration:.1f}s | {src}]")
+        src  = audio.name if audio else f"silence ({DEFAULT_LINE_SECS}s)"
+        kind = "video" if is_video else "image"
+        print(f"  Line {lid:2d} [{duration:.1f}s | {src} | {kind}]")
         print(f"         {text[:80]}{'...' if len(text) > 80 else ''}")
 
         seg_out = TMP_SEGS / f"seg_{lid:03d}.mp4"
         leading = 0.0 if idx == 0 else CROSSFADE_SECS
-        build_segment(image, duration, audio, seg_out, zoom_out=(idx % 2 == 1), pad_audio=not is_last, leading_silence=leading)
+        if is_video:
+            build_video_segment(media, duration, audio, seg_out, pad_audio=not is_last, leading_silence=leading)
+        else:
+            build_segment(media, duration, audio, seg_out, zoom_out=(idx % 2 == 1), pad_audio=not is_last, leading_silence=leading)
         segments.append(seg_out)
 
     if not segments:

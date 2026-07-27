@@ -112,6 +112,21 @@ def _relevant_overlap(query: str, candidate: str, min_matches: int = 1) -> bool:
     return hits >= min(min_matches, len(terms))
 
 
+def _best_wiki_match(keyword: str, pool: list[str], used: set) -> str | None:
+    """Pick pool URL whose filename best overlaps with keyword; skip already-used URLs."""
+    def score(url: str) -> int:
+        name = re.sub(r'^\d+px-', '', url.split("/")[-1].split("?")[0])
+        name = re.sub(r'\.\w+$', '', name).replace("_", " ")
+        terms = {w.lower() for w in re.split(r"\W+", keyword) if len(w) >= 4 and w.lower() not in _STOP}
+        return sum(1 for t in terms if t in name.lower()) if terms else 0
+
+    candidates = [(score(u), u) for u in pool if u not in used]
+    if not candidates:
+        return None
+    best_score, best_url = max(candidates, key=lambda x: x[0])
+    return best_url if best_score > 0 else None
+
+
 # ── Wikipedia keyword search (per-line) ──────────────────────────────────────
 
 def wikipedia_keyword_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
@@ -241,6 +256,45 @@ def pixabay_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE)
     return []
 
 
+# ── Pexels Video ─────────────────────────────────────────────────────────────
+
+def pexels_video_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE) -> list[dict]:
+    """Returns [{"url": video_url, "thumb": thumbnail_url}, ...]"""
+    params = urllib.parse.urlencode({
+        "query":       query,
+        "per_page":    limit * 2,
+        "page":        1,
+        "orientation": "portrait",
+    })
+    req = urllib.request.Request(
+        f"https://api.pexels.com/videos/search?{params}",
+        headers={"Authorization": api_key, "User-Agent": "Mozilla/5.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as resp:
+            data = json.loads(resp.read())
+        results = []
+        for v in data.get("videos", []):
+            thumb = v.get("image", "")
+            files = v.get("video_files", [])
+            portrait = [f for f in files if f.get("width", 1) < f.get("height", 1)]
+            candidates = portrait or files
+            if not candidates or not thumb:
+                continue
+            best = max(candidates, key=lambda f: f.get("width", 0) * f.get("height", 0))
+            url = best.get("link", "")
+            if url:
+                results.append({"url": url, "thumb": thumb})
+                if len(results) >= limit:
+                    break
+        return results
+    except urllib.error.HTTPError as e:
+        print(f"    [Pexels Video] HTTP {e.code}: {e.reason}")
+    except Exception as e:
+        print(f"    [Pexels Video] error: {e}")
+    return []
+
+
 # ── Candidates ────────────────────────────────────────────────────────────────
 
 def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
@@ -250,8 +304,9 @@ def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
         "wiki_keyword": wikipedia_keyword_search(query),
         "flickr":       flickr_commons_search(query, flickr_key) if flickr_key else [],
         "commons":      commons_search(query),
-        "pexels":       pexels_search(query, pexels_key)   if pexels_key   else [],
-        "pixabay":      pixabay_search(query, pixabay_key) if pixabay_key  else [],
+        "pexels":       pexels_search(query, pexels_key)         if pexels_key else [],
+        "pixabay":      pixabay_search(query, pixabay_key)       if pixabay_key else [],
+        "pexels_video": pexels_video_search(query, pexels_key)   if pexels_key else [],
     }
 
 
@@ -299,6 +354,7 @@ def main():
 
     IMAGES_DIR.mkdir(exist_ok=True)
     all_candidates = {}
+    used_wiki = set()
 
     for idx, line in enumerate(lines):
         lid = line["id"]
@@ -308,14 +364,18 @@ def main():
             or line["text"]
         )
         fallback_keyword = line.get("image_keyword_fallback", "")
-        wiki_url = wiki_pool[idx % len(wiki_pool)] if wiki_pool else None
+        wiki_url = None
+        if wiki_pool:
+            wiki_url = _best_wiki_match(keyword, wiki_pool, used_wiki)
+            if wiki_url:
+                used_wiki.add(wiki_url)
         print(f"  Line {lid:2d}: {keyword}")
         c = fetch_candidates(keyword, pexels_key, pixabay_key, flickr_key=flickr_key, wiki_url=wiki_url)
         if not c["wiki_keyword"] and fallback_keyword and fallback_keyword != keyword:
             print(f"    [fallback] no wiki match — trying: {fallback_keyword}")
             c["wiki_keyword"] = wikipedia_keyword_search(fallback_keyword)
         total = sum(len(v) for v in c.values())
-        print(f"    wiki:{len(c['wikipedia'])}  wiki_kw:{len(c['wiki_keyword'])}  flickr:{len(c['flickr'])}  commons:{len(c['commons'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  total:{total}")
+        print(f"    wiki:{len(c['wikipedia'])}  wiki_kw:{len(c['wiki_keyword'])}  flickr:{len(c['flickr'])}  commons:{len(c['commons'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  pexels_vid:{len(c['pexels_video'])}  total:{total}")
         all_candidates[str(lid)] = {
             "text":    line["text"],
             "keyword": keyword,
