@@ -1,5 +1,6 @@
 # Generated outputs
 output.mp4
+videos_output/
 audio/
 images/
 tmp_segments/
@@ -23,6 +24,8 @@ constraints.txt
 
 # Env / secrets (YouTube API, Pexels, etc. — add to .env, never commit)
 .env
+client_secrets.json
+yt_token.json
 
 # n8n exports with embedded credentials
 *.json.bak

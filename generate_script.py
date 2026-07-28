@@ -15,11 +15,13 @@ from pathlib import Path
 from wikipedia_fetch import fetch_wikipedia_text
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3:latest"
+OLLAMA_MODEL = "gemma2:9b"
 PROMPT_TEMPLATE = Path("script_prompt_template.txt")
 SCRIPT_JSON = Path("script.json")
 
 MAX_WIKI_CHARS = 4000
+MIN_LINES = 6
+MAX_RETRIES = 3
 
 
 def call_ollama(prompt: str) -> str:
@@ -27,7 +29,7 @@ def call_ollama(prompt: str) -> str:
         "model": OLLAMA_MODEL,
         "prompt": prompt,
         "stream": False,
-        "options": {"num_predict": 2048},
+        "options": {"num_predict": 3500},
     }).encode()
     req = urllib.request.Request(
         OLLAMA_URL,
@@ -75,14 +77,33 @@ def main():
     template = PROMPT_TEMPLATE.read_text(encoding="utf-8")
     prompt = template.replace("{{TOPIC}}", topic).replace("{{WIKIPEDIA_TEXT}}", reference)
 
-    print(f"Calling Ollama ({OLLAMA_MODEL})...")
-    raw = call_ollama(prompt)
+    script = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        if attempt > 1:
+            print(f"Retrying ({attempt}/{MAX_RETRIES})...")
+        print(f"Calling Ollama ({OLLAMA_MODEL})...")
+        raw = call_ollama(prompt)
+        try:
+            m = re.search(r'\{.*\}', raw, re.DOTALL)
+            if not m:
+                print(f"  [WARN] No JSON found, retrying...")
+                continue
+            cleaned = re.sub(r',(\s*[}\]])', r'\1', m.group())
+            candidate = json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            print(f"  [WARN] JSON parse failed: {e}, retrying...")
+            continue
+        lines = candidate.get("lines", [])
+        if len(lines) < MIN_LINES:
+            print(f"  [WARN] Only {len(lines)} lines (need {MIN_LINES}+), retrying...")
+            continue
+        script = candidate
+        break
 
-    script = extract_json(raw)
+    if not script:
+        sys.exit(f"[ERROR] Failed to get a valid script with {MIN_LINES}+ lines after {MAX_RETRIES} attempts.")
 
     lines = script.get("lines", [])
-    if not lines:
-        sys.exit(f"[ERROR] Script has no lines. Raw response:\n{raw[:600]}")
 
     script["wiki_title"] = wiki_title
     SCRIPT_JSON.write_text(json.dumps(script, indent=2, ensure_ascii=False), encoding="utf-8")

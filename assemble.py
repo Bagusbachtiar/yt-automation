@@ -15,6 +15,7 @@ Run:
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -82,7 +83,7 @@ def load_whisper():
     except ImportError:
         sys.exit("[ERROR] faster-whisper not installed. Run: pip install faster-whisper")
     print("Loading Whisper model...")
-    model = WhisperModel("base", device="cpu", compute_type="int8")
+    model = WhisperModel("small", device="cpu", compute_type="int8")
     print("Whisper ready.\n")
     return model
 
@@ -95,9 +96,9 @@ def extract_audio(video: Path, out: Path):
         raise RuntimeError("Audio extraction failed")
 
 
-def transcribe_words(model, audio: Path) -> list:
+def transcribe_words(model, audio: Path, initial_prompt: str = "") -> list:
     """Return [(word, start_sec, end_sec), ...] from audio file."""
-    segments, _ = model.transcribe(str(audio), word_timestamps=True)
+    segments, _ = model.transcribe(str(audio), word_timestamps=True, initial_prompt=initial_prompt)
     words = []
     for seg in segments:
         for w in (seg.words or []):
@@ -114,14 +115,18 @@ def format_ass_time(seconds: float) -> str:
     return f"{h:d}:{m:02d}:{s:05.2f}"
 
 
-def build_ass(word_events: list):
+def build_ass(word_events: list, highlight_terms: set = None):
     """word_events = [(abs_start, abs_end, word), ...] across whole video."""
     dialogue_lines = []
     for start, end, word in word_events:
         s = format_ass_time(start + CAPTION_OFFSET_SECS)
         e = format_ass_time(end + CAPTION_OFFSET_SECS)
+        if highlight_terms and word.lower() in highlight_terms:
+            tags = r"{\fad(40,0)\c&H0000FFFF&}"
+        else:
+            tags = r"{\fad(40,0)}"
         dialogue_lines.append(
-            f"Dialogue: 0,{s},{e},Caption,,0,0,0,,{{\\fad(40,0)}}{word}"
+            f"Dialogue: 0,{s},{e},Caption,,0,0,0,,{tags}{word}"
         )
 
     content = (
@@ -224,14 +229,18 @@ def build_video_segment(
     effective_duration = leading_silence + duration + pad
 
     clip_dur = get_duration(clip)
-    loop = ["-stream_loop", "-1"] if clip_dur < effective_duration else []
+    if clip_dur < effective_duration:
+        setpts = f"setpts={effective_duration / clip_dur:.6f}*PTS,"
+    else:
+        setpts = ""
 
     vf = (
+        f"{setpts}"
         f"scale={RES_W}:{RES_H}:force_original_aspect_ratio=increase,"
         f"crop={RES_W}:{RES_H},fps={FPS}"
     )
 
-    base = ["ffmpeg", "-y"] + loop + ["-i", str(clip)]
+    base = ["ffmpeg", "-y", "-i", str(clip)]
 
     if audio:
         af = ",".join(filter(None, [
@@ -346,6 +355,9 @@ def main():
     script = json.loads(SCRIPT_JSON.read_text(encoding="utf-8"))
     lines  = script["lines"]
     title  = script.get("title", "(no title)")
+    highlight_terms = {t.lower() for t in script.get("highlight_terms", [])}
+    if highlight_terms:
+        print(f"Highlight terms: {', '.join(highlight_terms)}")
     print(f"\nScript: '{title}' — {len(lines)} lines\n")
 
     TMP_SEGS.mkdir(exist_ok=True)
@@ -393,18 +405,31 @@ def main():
     tmp_audio = Path("tmp_audio.wav")
     extract_audio(TMP_CONCAT, tmp_audio)
     whisper = load_whisper()
-    word_events = transcribe_words(whisper, tmp_audio)
+    word_events = transcribe_words(whisper, tmp_audio, " ".join(l["text"] for l in lines))
     tmp_audio.unlink(missing_ok=True)
 
     print("Burning captions...")
-    build_ass(word_events)
+    build_ass(word_events, highlight_terms)
     burn_captions(TMP_CONCAT, CAPTIONS_ASS, OUTPUT)
 
     TMP_CONCAT.unlink(missing_ok=True)
     CAPTIONS_ASS.unlink(missing_ok=True)
     shutil.rmtree(TMP_SEGS, ignore_errors=True)
 
-    print(f"\nDone -> {OUTPUT.resolve()}")
+    # ── Archive to videos_output/{slug}/ ─────────────────────────────────────
+    slug = re.sub(r'[^\w\s-]', '', title.lower())
+    slug = re.sub(r'[\s]+', '-', slug).strip('-')[:60]
+    project_dir = Path("videos_output") / slug
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    shutil.copy(OUTPUT, project_dir / "output.mp4")
+    shutil.copy(SCRIPT_JSON, project_dir / "script.json")
+    if IMAGES_DIR.exists():
+        shutil.copytree(IMAGES_DIR, project_dir / "images", dirs_exist_ok=True)
+    if AUDIO_DIR.exists():
+        shutil.copytree(AUDIO_DIR, project_dir / "audio", dirs_exist_ok=True)
+
+    print(f"\nDone -> {(project_dir / 'output.mp4').resolve()}")
 
 
 if __name__ == "__main__":

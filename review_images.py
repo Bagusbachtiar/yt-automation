@@ -195,7 +195,7 @@ def main():
         try:
             preview_bytes = fetch_bytes(thumb if (is_video and thumb) else url)
             num = len(loaded) + 1
-            label = f"#{num} — {src}" + (" [VIDEO]" if is_video else "")
+            label = f"#{num} {src}" + (" [VIDEO]" if is_video else "")
             send_photo(token, chat_id, preview_bytes, caption=label)
             loaded.append((src, url, is_video))
             print(f"  #{num} uploaded ({src})")
@@ -217,11 +217,15 @@ def main():
 
     # Step 2 — assign per line
     ok = skipped = 0
+    used = set()
     for lid, data in pending.items():
+        available = [str(i + 1) for i in range(len(loaded)) if i not in used]
+        available_str = ", ".join(available) if available else "none"
         send_message(token, chat_id,
             f"Line {lid}/{len(candidates)}: \"{data['text']}\"\n"
             f"Keyword: {data['keyword']}\n"
-            f"Reply 1-{len(loaded)}, 'skip', or 'quit'."
+            f"Available: {available_str}\n"
+            f"Reply a number, 'skip', or 'quit'."
         )
         while True:
             reply, update_id = wait_for_reply(token, chat_id, update_id)
@@ -236,12 +240,17 @@ def main():
                 skipped += 1
                 break
             elif reply.isdigit() and 1 <= int(reply) <= len(loaded):
-                chosen_src, chosen_url, chosen_is_video = loaded[int(reply) - 1]
+                idx = int(reply) - 1
+                if idx in used:
+                    send_message(token, chat_id, f"#{reply} already used. Available: {available_str}")
+                    continue
+                chosen_src, chosen_url, chosen_is_video = loaded[idx]
                 ext = ".mp4" if chosen_is_video else ".jpg"
                 dest = IMAGES_DIR / f"{lid}{ext}"
                 try:
                     media_bytes = fetch_bytes(chosen_url)
                     dest.write_bytes(media_bytes)
+                    used.add(idx)
                     send_message(token, chat_id, f"Line {lid} saved. ({dest.stat().st_size // 1024} KB)")
                     print(f"  Line {lid}: saved ({dest.stat().st_size // 1024} KB)")
                     ok += 1
@@ -250,7 +259,7 @@ def main():
                     continue
                 break
             else:
-                send_message(token, chat_id, f"Not recognized. Reply 1-{len(loaded)}, 'skip', or 'quit'.")
+                send_message(token, chat_id, f"Not recognized. Available: {available_str} or 'skip'/'quit'.")
 
     send_message(token, chat_id,
         f"Review done. Saved={ok}  Skipped={skipped}\n"
