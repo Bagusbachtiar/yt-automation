@@ -8,6 +8,7 @@ Import: from wikipedia_fetch import fetch_wikipedia_text
 """
 
 import json
+import re
 import ssl
 import sys
 import urllib.request
@@ -62,8 +63,8 @@ def is_acceptable_license(license_str: str) -> bool:
         return False
     if "public domain" in l or l == "cc0":
         return True
-    if l.startswith("cc by") and "sa" not in l and "nc" not in l and "nd" not in l:
-        return True
+    if l.startswith("cc by") and "nc" not in l and "nd" not in l:
+        return True  # accepts CC BY and CC BY-SA
     return False
 
 
@@ -114,6 +115,56 @@ def fetch_wikipedia_images(title: str, limit: int = 30) -> list[str]:
                 if len(results) >= limit:
                     return results
     return results
+
+
+def fetch_wikipedia_pageimage(title: str) -> str | None:
+    """Return the URL of the article's representative image (infobox photo)."""
+    params = urllib.parse.urlencode({
+        "action": "query",
+        "titles": title,
+        "prop": "pageimages",
+        "piprop": "original",
+        "format": "json",
+    })
+    try:
+        data = json.loads(_get(f"{WIKI_API}?{params}"))
+        pages = data.get("query", {}).get("pages", {})
+        page = next(iter(pages.values()))
+        return page.get("original", {}).get("source")
+    except Exception:
+        return None
+
+
+def fetch_eol_text(animal: str, max_chars: int = 3000) -> tuple[str, str]:
+    """Return (matched_name, text) from Encyclopedia of Life. Empty strings on failure."""
+    EOL_SEARCH = "https://eol.org/api/search/1.0.json"
+    EOL_PAGES  = "https://eol.org/api/pages/1.0"
+    try:
+        params = urllib.parse.urlencode({"q": animal, "page": 1})
+        data = json.loads(_get(f"{EOL_SEARCH}?{params}"))
+        results = data.get("results", [])
+        if not results:
+            return "", ""
+        page_id = results[0]["id"]
+        name    = results[0].get("title", animal)
+
+        params = urllib.parse.urlencode({
+            "text":     5,
+            "subjects": "overview|behavior|distribution|physiology|life_history",
+            "licenses": "pd|cc-by|cc-by-nc|cc-by-sa",
+            "details":  "true",
+        })
+        data = json.loads(_get(f"{EOL_PAGES}/{page_id}.json?{params}"))
+        chunks = []
+        for obj in data.get("taxon_concept", {}).get("data_objects", []):
+            raw = obj.get("description", "")
+            clean = re.sub(r"<[^>]+>", " ", raw)
+            clean = re.sub(r"\s+", " ", clean).strip()
+            if clean:
+                chunks.append(clean)
+        return name, " ".join(chunks)[:max_chars]
+    except Exception:
+        return "", ""
 
 
 def fetch_wikipedia_text(topic: str) -> tuple[str, str]:

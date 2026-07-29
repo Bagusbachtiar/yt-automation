@@ -21,7 +21,8 @@ import urllib.parse
 import urllib.error
 from pathlib import Path
 
-from wikipedia_fetch import fetch_wikipedia_images, is_acceptable_license, search_wikipedia
+from wikipedia_fetch import (fetch_wikipedia_images, fetch_wikipedia_pageimage,
+                             is_acceptable_license, search_wikipedia)
 
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
@@ -206,24 +207,28 @@ def loc_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
 
 # ── Pexels ────────────────────────────────────────────────────────────────────
 
-def pexels_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
+def pexels_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE,
+                  require_term: str = "") -> list[str]:
     params = urllib.parse.urlencode({
         "query":       query,
         "orientation": PEXELS_ORIENTATION,
-        "per_page":    limit * 2,
+        "per_page":    limit * 4,
         "page":        1,
     })
     req = urllib.request.Request(
         f"https://api.pexels.com/v1/search?{params}",
-        headers={
-            "Authorization": api_key,
-            "User-Agent": "Mozilla/5.0",
-        },
+        headers={"Authorization": api_key, "User-Agent": "Mozilla/5.0"},
     )
     try:
         with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as resp:
             data = json.loads(resp.read())
-        return [p["src"]["large2x"] for p in data.get("photos", [])[:limit]]
+        photos = data.get("photos", [])
+        term = require_term.lower()
+        matched = [p["src"]["large2x"] for p in photos
+                   if not term or term in p.get("alt", "").lower()][:limit]
+        if not matched and photos:
+            matched = [p["src"]["large2x"] for p in photos[:limit]]
+        return matched
     except urllib.error.HTTPError as e:
         print(f"    [Pexels] HTTP {e.code}: {e.reason}")
     except Exception as e:
@@ -258,11 +263,12 @@ def pixabay_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE)
 
 # ── Pexels Video ─────────────────────────────────────────────────────────────
 
-def pexels_video_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE) -> list[dict]:
+def pexels_video_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE,
+                        require_term: str = "") -> list[dict]:
     """Returns [{"url": video_url, "thumb": thumbnail_url}, ...]"""
     params = urllib.parse.urlencode({
         "query":       query,
-        "per_page":    limit * 2,
+        "per_page":    limit * 4,
         "page":        1,
         "orientation": "portrait",
     })
@@ -273,21 +279,29 @@ def pexels_video_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SO
     try:
         with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as resp:
             data = json.loads(resp.read())
-        results = []
-        for v in data.get("videos", []):
-            thumb = v.get("image", "")
-            files = v.get("video_files", [])
-            portrait = [f for f in files if f.get("width", 1) < f.get("height", 1)]
-            candidates = portrait or files
-            if not candidates or not thumb:
-                continue
-            best = max(candidates, key=lambda f: f.get("width", 0) * f.get("height", 0))
-            url = best.get("link", "")
-            if url:
-                results.append({"url": url, "thumb": thumb})
-                if len(results) >= limit:
-                    break
-        return results
+        term = require_term.lower()
+
+        def _parse(videos):
+            results = []
+            for v in videos:
+                thumb = v.get("image", "")
+                files = v.get("video_files", [])
+                portrait = [f for f in files if f.get("width", 1) < f.get("height", 1)]
+                candidates = portrait or files
+                if not candidates or not thumb:
+                    continue
+                best = max(candidates, key=lambda f: f.get("width", 0) * f.get("height", 0))
+                url = best.get("link", "")
+                if url:
+                    results.append({"url": url, "thumb": thumb, "_page_url": v.get("url", "")})
+            return results
+
+        all_parsed = _parse(data.get("videos", []))
+        matched = [r for r in all_parsed
+                   if not term or term in r.get("_page_url", "").lower()][:limit]
+        if not matched:
+            matched = all_parsed[:limit]
+        return [{"url": r["url"], "thumb": r["thumb"]} for r in matched]
     except urllib.error.HTTPError as e:
         print(f"    [Pexels Video] HTTP {e.code}: {e.reason}")
     except Exception as e:
@@ -297,16 +311,40 @@ def pexels_video_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SO
 
 # ── Candidates ────────────────────────────────────────────────────────────────
 
+def _shorten(query: str) -> list[str]:
+    """Return progressively shorter keyword variants to try as fallbacks."""
+    words = query.split()
+    variants = [query]
+    if len(words) > 2:
+        variants.append(" ".join(words[:2]))
+    if len(words) > 1:
+        variants.append(words[0])
+    return list(dict.fromkeys(variants))  # dedupe, preserve order
+
+
+def _pexels_with_fallback(query: str, api_key: str, fn, require_term: str,
+                          limit: int = CANDIDATES_PER_SOURCE) -> list:
+    for kw in _shorten(query):
+        results = fn(kw, api_key, limit=limit, require_term=require_term)
+        if results:
+            if kw != query:
+                print(f"    [fallback keyword] '{query}' → '{kw}'")
+            return results
+    return []
+
+
 def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
-                     flickr_key: str = "", wiki_url: str | None = None) -> dict:
+                     flickr_key: str = "", wiki_url: str | None = None,
+                     animal: str = "") -> dict:
+    term = animal.lower().split()[0] if animal else ""
     return {
         "wikipedia":    [wiki_url] if wiki_url else [],
         "wiki_keyword": wikipedia_keyword_search(query),
         "flickr":       flickr_commons_search(query, flickr_key) if flickr_key else [],
         "commons":      commons_search(query),
-        "pexels":       pexels_search(query, pexels_key)         if pexels_key else [],
-        "pixabay":      pixabay_search(query, pixabay_key)       if pixabay_key else [],
-        "pexels_video": pexels_video_search(query, pexels_key)   if pexels_key else [],
+        "pexels":       _pexels_with_fallback(query, pexels_key, pexels_search, term)       if pexels_key else [],
+        "pixabay":      pixabay_search(query, pixabay_key)                                  if pixabay_key else [],
+        "pexels_video": _pexels_with_fallback(query, pexels_key, pexels_video_search, term) if pexels_key else [],
     }
 
 
@@ -345,12 +383,15 @@ def main():
     lines  = script["lines"]
     print(f"\nCollecting candidates for {len(lines)} lines...\n")
 
-    wiki_pool = []
-    wiki_title = script.get("wiki_title", "")
+    wiki_pool    = []
+    wiki_infobox = None
+    wiki_title   = script.get("wiki_title", "")
     if wiki_title:
-        print(f"Fetching Wikipedia article images for '{wiki_title}'...")
-        wiki_pool = fetch_wikipedia_images(wiki_title)
-        print(f"  {len(wiki_pool)} licensed images in pool\n")
+        print(f"Fetching Wikipedia images for '{wiki_title}'...")
+        wiki_infobox = fetch_wikipedia_pageimage(wiki_title)
+        wiki_pool    = fetch_wikipedia_images(wiki_title)
+        print(f"  infobox: {'found' if wiki_infobox else 'none'}  "
+              f"article pool: {len(wiki_pool)} licensed images\n")
 
     IMAGES_DIR.mkdir(exist_ok=True)
     all_candidates = {}
@@ -369,8 +410,9 @@ def main():
             wiki_url = _best_wiki_match(keyword, wiki_pool, used_wiki)
             if wiki_url:
                 used_wiki.add(wiki_url)
+        animal = script.get("animal", "")
         print(f"  Line {lid:2d}: {keyword}")
-        c = fetch_candidates(keyword, pexels_key, pixabay_key, flickr_key=flickr_key, wiki_url=wiki_url)
+        c = fetch_candidates(keyword, pexels_key, pixabay_key, flickr_key=flickr_key, wiki_url=wiki_url, animal=animal)
         if not c["wiki_keyword"] and fallback_keyword and fallback_keyword != keyword:
             print(f"    [fallback] no wiki match — trying: {fallback_keyword}")
             c["wiki_keyword"] = wikipedia_keyword_search(fallback_keyword)
@@ -379,7 +421,7 @@ def main():
         all_candidates[str(lid)] = {
             "text":    line["text"],
             "keyword": keyword,
-            "sources": c,
+            "sources": {**c, "wiki_infobox": [wiki_infobox] if wiki_infobox else []},
         }
         time.sleep(SLEEP_BETWEEN)
 

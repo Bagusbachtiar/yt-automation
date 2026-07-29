@@ -6,13 +6,14 @@ Usage:  python generate_script.py "The Fall of the Berlin Wall"
 Output: script.json
 """
 
+import argparse
 import json
 import re
 import sys
 import urllib.request
 from pathlib import Path
 
-from wikipedia_fetch import fetch_wikipedia_text
+from wikipedia_fetch import fetch_wikipedia_text, fetch_eol_text
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma2:9b"
@@ -56,11 +57,16 @@ def extract_json(text: str) -> dict:
 
 
 def main():
-    if len(sys.argv) < 2:
-        sys.exit('Usage: python generate_script.py "topic here"')
+    parser = argparse.ArgumentParser()
+    parser.add_argument("topic", nargs="+", help="Animal name (used for Wikipedia search)")
+    parser.add_argument("--title", default=None, help="Chosen title for content direction")
+    args = parser.parse_args()
+    topic = " ".join(args.topic)
+    content_topic = args.title if args.title else topic
 
-    topic = " ".join(sys.argv[1:])
-    print(f"\nTopic: {topic}")
+    print(f"\nAnimal: {topic}")
+    if args.title:
+        print(f"Title:  {args.title}")
 
     if not PROMPT_TEMPLATE.exists():
         sys.exit(f"[ERROR] {PROMPT_TEMPLATE} not found.")
@@ -69,10 +75,18 @@ def main():
     wiki_title, wiki_text = fetch_wikipedia_text(topic)
     print(f"Found: '{wiki_title}' ({len(wiki_text)} chars)")
 
-    # Trim to avoid blowing out the context window
+    print("Fetching EOL species data...")
+    eol_name, eol_text = fetch_eol_text(topic)
+    if eol_text:
+        print(f"EOL: '{eol_name}' ({len(eol_text)} chars)")
+    else:
+        print("EOL: no data found, using Wikipedia only")
+
     reference = wiki_text[:MAX_WIKI_CHARS]
     if len(wiki_text) > MAX_WIKI_CHARS:
         reference += "\n[...truncated]"
+    if eol_text:
+        reference += f"\n\n[Encyclopedia of Life]\n{eol_text[:2000]}"
 
     template = PROMPT_TEMPLATE.read_text(encoding="utf-8")
     prompt = template.replace("{{TOPIC}}", topic).replace("{{WIKIPEDIA_TEXT}}", reference)
@@ -105,7 +119,14 @@ def main():
 
     lines = script.get("lines", [])
 
+    # strip em dashes the model still sneaks in despite the prompt rule
+    for ln in lines:
+        ln["text"] = ln["text"].replace("—", ",").replace(" ,", ",")
+    if "title" in script:
+        script["title"] = script["title"].replace("—", ",").replace(" ,", ",")
+
     script["wiki_title"] = wiki_title
+    script["animal"] = topic
     SCRIPT_JSON.write_text(json.dumps(script, indent=2, ensure_ascii=False), encoding="utf-8")
 
     title = script.get("title", "(no title)")
