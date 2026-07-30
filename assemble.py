@@ -15,12 +15,15 @@ Run:
 """
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
+
+_CNW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 # ── Config ────────────────────────────────────────────────────────────────────
 RES_W, RES_H = 1080, 1920
@@ -64,7 +67,7 @@ def get_duration(path: Path) -> float:
          "-show_entries", "format=duration",
          "-of", "default=noprint_wrappers=1:nokey=1",
          str(path)],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, creationflags=_CNW,
     )
     return float(r.stdout.strip())
 
@@ -91,7 +94,7 @@ def load_whisper():
 def extract_audio(video: Path, out: Path):
     """Extract audio from video to WAV for Whisper."""
     cmd = ["ffmpeg", "-y", "-i", str(video), "-vn", "-acodec", "pcm_s16le", str(out)]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, creationflags=_CNW)
     if result.returncode != 0:
         raise RuntimeError("Audio extraction failed")
 
@@ -211,7 +214,7 @@ def build_segment(
             str(out),
         ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, creationflags=_CNW)
     if result.returncode != 0:
         print(f"\n[ffmpeg stderr — {out.stem}]\n{result.stderr[-3000:]}")
         raise RuntimeError(f"Segment build failed: {out.stem}")
@@ -270,7 +273,7 @@ def build_video_segment(
             str(out),
         ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, creationflags=_CNW)
     if result.returncode != 0:
         print(f"\n[ffmpeg stderr — {out.stem}]\n{result.stderr[-3000:]}")
         raise RuntimeError(f"Segment build failed: {out.stem}")
@@ -320,7 +323,7 @@ def concat_segments(segments: list, out: Path):
          "-pix_fmt", "yuv420p",
          str(out)]
     )
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, creationflags=_CNW)
     if result.returncode != 0:
         print(f"\n[ffmpeg stderr — concat]\n{result.stderr[-3000:]}")
         raise RuntimeError("Concat failed")
@@ -336,7 +339,7 @@ def burn_captions(video_in: Path, ass_file: Path, out: Path):
         "-pix_fmt", "yuv420p",
         str(out),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, creationflags=_CNW)
     if result.returncode != 0:
         print(f"\n[ffmpeg stderr — burn_captions]\n{result.stderr[-3000:]}")
         raise RuntimeError("Caption burn failed")

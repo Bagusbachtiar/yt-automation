@@ -6,6 +6,7 @@ Outputs: audio/1.wav, audio/2.wav, ... (one file per script line)
 Run: python generate_audio.py
 """
 
+import argparse
 import json
 import sys
 import soundfile as sf
@@ -37,12 +38,17 @@ def download_models():
         print(f"Downloading {dest.name} ...")
         try:
             urllib.request.urlretrieve(url, dest)
-            print(f"  → {dest} saved")
+            print(f"  -> {dest} saved")
         except Exception as e:
             sys.exit(f"[ERROR] Download failed for {dest.name}: {e}")
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--voice", default=VOICE, help="Kokoro voice ID")
+    args = parser.parse_args()
+    voice = args.voice
+
     try:
         from kokoro_onnx import Kokoro
     except ImportError:
@@ -55,7 +61,7 @@ def main():
 
     script = json.loads(SCRIPT_JSON.read_text(encoding="utf-8"))
     lines  = script["lines"]
-    print(f"\nGenerating TTS for {len(lines)} lines | voice: {VOICE}\n")
+    print(f"\nGenerating TTS for {len(lines)} lines | voice: {voice}\n")
 
     AUDIO_DIR.mkdir(exist_ok=True)
 
@@ -69,7 +75,7 @@ def main():
         out  = AUDIO_DIR / f"{lid}.wav"
 
         print(f"  Line {lid:2d}: {text[:65]}{'...' if len(text) > 65 else ''}")
-        samples, sample_rate = kokoro.create(text, voice=VOICE, speed=SPEED, lang=LANG)
+        samples, sample_rate = kokoro.create(text, voice=voice, speed=SPEED, lang=LANG)
         sf.write(str(out), samples, sample_rate)
         duration = len(samples) / sample_rate
         print(f"          -> {out}  ({duration:.2f}s)")

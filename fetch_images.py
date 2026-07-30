@@ -104,6 +104,31 @@ def commons_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
 
 _STOP = {"the", "a", "an", "of", "in", "at", "to", "for", "and", "or", "is", "was", "by"}
 
+# Food/commercial context suppression — applied to Pexels alt text and Pixabay tags.
+# Catches food-fish problem: tuna/salmon results dominated by sushi plates and market counters.
+# Only applied when the image keyword and script line text don't signal a fishing/industry topic
+# (so lines about overfishing can still surface fishing boat imagery).
+_FOOD_SIGNALS = frozenset({
+    # Food preparation / serving
+    "sushi", "sashimi", "fillet", "filet",
+    "seafood", "fishmonger",
+    "grilled", "smoked", "fried", "baked", "cooked",
+    "plate", "dish", "meal", "recipe",
+    "canned", "grocery", "supermarket", "restaurant",
+    "cutting board",
+    # Raw / dead food context ("raw" alone risks false positives like "raw footage")
+    "raw fish", "fresh catch",
+    # Commercial / market
+    "fish market", "market stall", "seafood market",
+    # Industrial fishing — excluded unless line is about overfishing/conservation
+    "fishing boat", "fishing net", "fishing vessel", "fish haul",
+})
+_FISHING_QUERY_SIGNALS = frozenset({
+    "fishing", "fisherman", "overfishing", "bycatch",
+    "trawl", "trawler", "commercial",
+})
+_FISHING_LINE_SIGNALS  = frozenset({"overfishing", "bycatch", "trawl", "fishing industry"})
+
 def _relevant_overlap(query: str, candidate: str, min_matches: int = 1) -> bool:
     terms = {w.lower() for w in re.split(r"\W+", query) if len(w) >= 4 and w.lower() not in _STOP}
     if not terms:
@@ -208,7 +233,8 @@ def loc_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
 # ── Pexels ────────────────────────────────────────────────────────────────────
 
 def pexels_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE,
-                  require_term: str = "") -> list[str]:
+                  require_terms: list[str] | None = None,
+                  exclude_terms: frozenset | None = None) -> list[str]:
     params = urllib.parse.urlencode({
         "query":       query,
         "orientation": PEXELS_ORIENTATION,
@@ -222,12 +248,14 @@ def pexels_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE,
     try:
         with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as resp:
             data = json.loads(resp.read())
-        photos = data.get("photos", [])
-        term = require_term.lower()
-        matched = [p["src"]["large2x"] for p in photos
-                   if not term or term in p.get("alt", "").lower()][:limit]
-        if not matched and photos:
-            matched = [p["src"]["large2x"] for p in photos[:limit]]
+        photos  = data.get("photos", [])
+        incl    = require_terms or []
+        excl    = exclude_terms or frozenset()
+        matched = [
+            p["src"]["large2x"] for p in photos
+            if (not incl or all(t in p.get("alt", "").lower() for t in incl))
+            and (not excl or not any(e in p.get("alt", "").lower() for e in excl))
+        ][:limit]
         return matched
     except urllib.error.HTTPError as e:
         print(f"    [Pexels] HTTP {e.code}: {e.reason}")
@@ -238,7 +266,9 @@ def pexels_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE,
 
 # ── Pixabay ───────────────────────────────────────────────────────────────────
 
-def pixabay_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
+def pixabay_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE,
+                   require_terms: list[str] | None = None,
+                   exclude_terms: frozenset | None = None) -> list[str]:
     params = urllib.parse.urlencode({
         "key":         api_key,
         "q":           query,
@@ -253,7 +283,16 @@ def pixabay_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE)
             f"https://pixabay.com/api/?{params}", timeout=10, context=_SSL_CTX
         ) as resp:
             data = json.loads(resp.read())
-        return [h["largeImageURL"] for h in data.get("hits", [])[:limit] if h.get("largeImageURL")]
+        hits  = data.get("hits", [])
+        incl  = require_terms or []
+        excl  = exclude_terms or frozenset()
+        matched = [
+            h["largeImageURL"] for h in hits
+            if h.get("largeImageURL")
+            and (not incl or all(t in h.get("tags", "").lower() for t in incl))
+            and (not excl or not any(e in h.get("tags", "").lower() for e in excl))
+        ][:limit]
+        return matched
     except urllib.error.HTTPError as e:
         print(f"    [Pixabay] HTTP {e.code}: {e.reason}")
     except Exception as e:
@@ -261,10 +300,76 @@ def pixabay_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE)
     return []
 
 
+# ── iNaturalist ───────────────────────────────────────────────────────────────
+
+def inaturalist_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
+    """Community observation photos (CC-licensed). Biodiversity DB — search relevance is intrinsic."""
+    params = urllib.parse.urlencode({
+        "q":        query,
+        "photos":   "true",
+        "per_page": limit * 4,
+        "order_by": "votes",
+        "license":  "cc0,cc-by,cc-by-sa,cc-by-nc,cc-by-nc-sa",
+    })
+    try:
+        req = urllib.request.Request(
+            f"https://api.inaturalist.org/v1/observations?{params}",
+            headers={"User-Agent": "yt-automation/1.0 (bagusbachtiar50@gmail.com)"},
+        )
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+            data = json.loads(resp.read())
+        urls = []
+        for obs in data.get("results", []):
+            for photo in obs.get("photos", []):
+                url = photo.get("url", "").replace("/square.", "/large.")
+                if url:
+                    urls.append(url)
+                    if len(urls) >= limit:
+                        return urls
+        return urls
+    except Exception as e:
+        print(f"    [iNaturalist] error: {e}")
+    return []
+
+
+# ── GBIF ──────────────────────────────────────────────────────────────────────
+
+def gbif_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
+    """Species occurrence images from GBIF (no key, free). Biodiversity DB — search relevance is intrinsic."""
+    params = urllib.parse.urlencode({
+        "q":         query,
+        "mediaType": "StillImage",
+        "limit":     limit * 4,
+    })
+    try:
+        req = urllib.request.Request(
+            f"https://api.gbif.org/v1/occurrence/search?{params}",
+            headers={"User-Agent": "yt-automation/1.0 (bagusbachtiar50@gmail.com)"},
+        )
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as resp:
+            data = json.loads(resp.read())
+        urls = []
+        for occ in data.get("results", []):
+            for media in occ.get("media", []):
+                if media.get("type") != "StillImage":
+                    continue
+                url = media.get("identifier", "")
+                lic = media.get("license", "").lower()
+                if url and ("creativecommons" in lic or not lic):
+                    urls.append(url)
+                    if len(urls) >= limit:
+                        return urls
+        return urls
+    except Exception as e:
+        print(f"    [GBIF] error: {e}")
+    return []
+
+
 # ── Pexels Video ─────────────────────────────────────────────────────────────
 
 def pexels_video_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SOURCE,
-                        require_term: str = "") -> list[dict]:
+                        require_terms: list[str] | None = None,
+                        exclude_terms: frozenset | None = None) -> list[dict]:
     """Returns [{"url": video_url, "thumb": thumbnail_url}, ...]"""
     params = urllib.parse.urlencode({
         "query":       query,
@@ -279,7 +384,7 @@ def pexels_video_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SO
     try:
         with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as resp:
             data = json.loads(resp.read())
-        term = require_term.lower()
+        terms = require_terms or []
 
         def _parse(videos):
             results = []
@@ -298,9 +403,7 @@ def pexels_video_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SO
 
         all_parsed = _parse(data.get("videos", []))
         matched = [r for r in all_parsed
-                   if not term or term in r.get("_page_url", "").lower()][:limit]
-        if not matched:
-            matched = all_parsed[:limit]
+                   if not terms or all(t in r.get("_page_url", "").lower() for t in terms)][:limit]
         return [{"url": r["url"], "thumb": r["thumb"]} for r in matched]
     except urllib.error.HTTPError as e:
         print(f"    [Pexels Video] HTTP {e.code}: {e.reason}")
@@ -322,29 +425,47 @@ def _shorten(query: str) -> list[str]:
     return list(dict.fromkeys(variants))  # dedupe, preserve order
 
 
-def _pexels_with_fallback(query: str, api_key: str, fn, require_term: str,
+def _pexels_with_fallback(query: str, api_key: str, fn, require_terms: list[str],
+                          exclude_terms: frozenset | None = None,
                           limit: int = CANDIDATES_PER_SOURCE) -> list:
     for kw in _shorten(query):
-        results = fn(kw, api_key, limit=limit, require_term=require_term)
+        results = fn(kw, api_key, limit=limit, require_terms=require_terms,
+                     exclude_terms=exclude_terms)
         if results:
             if kw != query:
-                print(f"    [fallback keyword] '{query}' → '{kw}'")
+                print(f"    [fallback keyword] '{query}' -> '{kw}'")
             return results
     return []
 
 
 def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
                      flickr_key: str = "", wiki_url: str | None = None,
-                     animal: str = "") -> dict:
-    term = animal.lower().split()[0] if animal else ""
+                     animal: str = "", line_text: str = "") -> dict:
+    # 1-word: check that word; 2-word: require both ("sea pig" needs "sea" AND "pig");
+    # 3+-word: last word only (modifier words like "great" are too generic to require)
+    words = animal.lower().split() if animal else []
+    if len(words) <= 2:
+        require_terms = words
+    else:
+        require_terms = [words[-1]]
+
+    # Suppress food/commercial imagery (sushi, fillet, plate…) unless the keyword or
+    # line text signals that fishing/industry context is intentional (overfishing lines,
+    # conservation lines — those should be able to surface boat/net imagery).
+    fishing_context = bool(set(query.lower().split()) & _FISHING_QUERY_SIGNALS) or \
+                      any(t in line_text.lower() for t in _FISHING_LINE_SIGNALS)
+    exclude_terms = frozenset() if fishing_context else _FOOD_SIGNALS
+
     return {
         "wikipedia":    [wiki_url] if wiki_url else [],
         "wiki_keyword": wikipedia_keyword_search(query),
         "flickr":       flickr_commons_search(query, flickr_key) if flickr_key else [],
         "commons":      commons_search(query),
-        "pexels":       _pexels_with_fallback(query, pexels_key, pexels_search, term)       if pexels_key else [],
-        "pixabay":      pixabay_search(query, pixabay_key)                                  if pixabay_key else [],
-        "pexels_video": _pexels_with_fallback(query, pexels_key, pexels_video_search, term) if pexels_key else [],
+        "pexels":       _pexels_with_fallback(query, pexels_key, pexels_search, require_terms, exclude_terms)       if pexels_key else [],
+        "pixabay":      pixabay_search(query, pixabay_key, require_terms=require_terms, exclude_terms=exclude_terms) if pixabay_key else [],
+        "inaturalist":  inaturalist_search(query),
+        "gbif":         gbif_search(query),
+        "pexels_video": _pexels_with_fallback(query, pexels_key, pexels_video_search, require_terms, exclude_terms) if pexels_key else [],
     }
 
 
@@ -412,12 +533,13 @@ def main():
                 used_wiki.add(wiki_url)
         animal = script.get("animal", "")
         print(f"  Line {lid:2d}: {keyword}")
-        c = fetch_candidates(keyword, pexels_key, pixabay_key, flickr_key=flickr_key, wiki_url=wiki_url, animal=animal)
+        c = fetch_candidates(keyword, pexels_key, pixabay_key, flickr_key=flickr_key,
+                             wiki_url=wiki_url, animal=animal, line_text=line.get("text", ""))
         if not c["wiki_keyword"] and fallback_keyword and fallback_keyword != keyword:
             print(f"    [fallback] no wiki match — trying: {fallback_keyword}")
             c["wiki_keyword"] = wikipedia_keyword_search(fallback_keyword)
         total = sum(len(v) for v in c.values())
-        print(f"    wiki:{len(c['wikipedia'])}  wiki_kw:{len(c['wiki_keyword'])}  flickr:{len(c['flickr'])}  commons:{len(c['commons'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  pexels_vid:{len(c['pexels_video'])}  total:{total}")
+        print(f"    wiki:{len(c['wikipedia'])}  wiki_kw:{len(c['wiki_keyword'])}  flickr:{len(c['flickr'])}  commons:{len(c['commons'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  inat:{len(c['inaturalist'])}  gbif:{len(c['gbif'])}  pexels_vid:{len(c['pexels_video'])}  total:{total}")
         all_candidates[str(lid)] = {
             "text":    line["text"],
             "keyword": keyword,
@@ -442,14 +564,14 @@ def main():
                 print(f"  {lid_str}.jpg already exists, skip")
                 continue
             sources = data["sources"]
-            url = (sources["wikipedia"] or sources["wiki_keyword"] or sources["flickr"] or sources["commons"] or sources["pexels"] or sources["pixabay"] or [None])[0]
+            url = (sources["wikipedia"] or sources["wiki_keyword"] or sources["flickr"] or sources["commons"] or sources["pexels"] or sources["pixabay"] or sources["inaturalist"] or sources["gbif"] or [None])[0]
             if not url:
                 print(f"  Line {lid_str}: no result from any source")
                 failed += 1
                 continue
             try:
                 download(url, dest)
-                for src in ("wikipedia", "wiki_keyword", "flickr", "commons", "pexels", "pixabay"):
+                for src in ("wikipedia", "wiki_keyword", "flickr", "commons", "pexels", "pixabay", "inaturalist", "gbif"):
                     if url in sources.get(src, []):
                         break
                 print(f"  {lid_str}.jpg  ({src}, {dest.stat().st_size // 1024} KB)")

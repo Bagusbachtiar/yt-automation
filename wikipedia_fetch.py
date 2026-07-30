@@ -167,6 +167,60 @@ def fetch_eol_text(animal: str, max_chars: int = 3000) -> tuple[str, str]:
         return "", ""
 
 
+def fetch_gbif_species_text(animal: str, wiki_title: str = "", max_chars: int = 2000) -> tuple[str, str]:
+    """Return (scientific_name, text) from GBIF species descriptions. Empty strings on failure.
+
+    fishbase.ropensci.org REST API was decommissioned (all paths 404 as of 2025).
+    GBIF is the best available no-key replacement — its species backbone aggregates
+    Catalog of Fishes, FishBase-derived taxonomy, and multi-source descriptions.
+    wiki_title (scientific name) is tried first: GBIF search handles common names poorly
+    for taxa where the genus name matches the common name (e.g., "plecostomus").
+    """
+    GBIF_SEARCH  = "https://api.gbif.org/v1/species/search"
+    GBIF_DESC    = "https://api.gbif.org/v1/species/{key}/descriptions"
+    PREFER_TYPES = ["Physiology", "Diet", "Distribution and habitat", "Ecology", "General", "Abstract"]
+    queries = []
+    if wiki_title and wiki_title.lower() != animal.lower():
+        queries.append(wiki_title)
+    queries.append(animal)
+    try:
+        for query in queries:
+            params = urllib.parse.urlencode({"q": query, "limit": 10})
+            data = json.loads(_get(f"{GBIF_SEARCH}?{params}"))
+            for sp in data.get("results", []):
+                key = sp.get("key")
+                if not key:
+                    continue
+                try:
+                    desc_data = json.loads(_get(GBIF_DESC.format(key=key)))
+                except Exception:
+                    continue
+                descriptions = desc_data.get("results", [])
+                if not descriptions:
+                    continue
+                sci_name = sp.get("canonicalName", animal)
+                by_type = {d.get("type"): d.get("description", "") for d in descriptions}
+                parts = []
+                for t in PREFER_TYPES:
+                    text = re.sub(r"<[^>]+>", " ", by_type.get(t, ""))
+                    text = re.sub(r"\s+", " ", text).strip()
+                    if text:
+                        parts.append(f"[{t}] {text}")
+                for d in descriptions:
+                    t = d.get("type", "Note")
+                    if t not in PREFER_TYPES:
+                        text = re.sub(r"<[^>]+>", " ", d.get("description", ""))
+                        text = re.sub(r"\s+", " ", text).strip()
+                        if text:
+                            parts.append(f"[{t}] {text}")
+                combined = " ".join(parts)
+                if combined:
+                    return sci_name, combined[:max_chars]
+        return "", ""
+    except Exception:
+        return "", ""
+
+
 def fetch_wikipedia_text(topic: str) -> tuple[str, str]:
     """Returns (matched_title, article_text). Exits on failure."""
     title = search_wikipedia(topic)

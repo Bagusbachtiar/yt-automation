@@ -12,8 +12,9 @@ STRICT RULES:
 7. image_keyword: 2-3 words MAX. Format: "[animal name] [simple visual noun or setting]". The animal name MUST be the first word. Use the most common, searchable stock photo scenario — what a wildlife photographer would tag a photo with.
    GOOD: "platypus swimming", "bat animal flying", "eagle in flight", "whale breaching ocean"
    BAD: "platypus searching for food riverbed" (too long/behavioral), "conservation sign near water" (no animal), "group of people observing platypus" (humans), "bat echolocation sound wave" (abstract/conceptual)
-   For ANY line — including lines about threats, ecology, behavior, or invisible processes — the keyword must still show the ANIMAL physically, not the concept.
+   For most lines — including ecology, behavior, and invisible processes — show the ANIMAL physically, not the concept.
    NEVER use humans, people, hands, signs, symbols, diagrams, or abstract processes as the subject.
+   EXCEPTION — human threat lines: If the line describes a human-caused threat (overfishing, commercial fishing, habitat destruction, bycatch, pollution, poaching), the keyword MUST depict the threat mechanism, not the animal swimming. Use keywords like "tuna fishing boat", "commercial fishing net", "salmon trawler", "habitat destruction". These lines are specifically about the threat — showing the threat is correct and gives the viewer visual context that matches the narration. The animal name still goes first: "tuna fishing net", "salmon bycatch boat".
 
 8. HOMOGRAPH WARNING: Some animal names double as common non-animal words. These will pull wrong stock results unless you disambiguate:
    - "bat" → stock sites return baseball bats. Always write "bat animal", "bat mammal", "bat wings", "bat cave" — never "bat flying" or "bat action" alone.

@@ -13,7 +13,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from wikipedia_fetch import fetch_wikipedia_text, fetch_eol_text
+from wikipedia_fetch import fetch_wikipedia_text, fetch_eol_text, fetch_gbif_species_text
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma2:9b"
@@ -80,13 +80,22 @@ def main():
     if eol_text:
         print(f"EOL: '{eol_name}' ({len(eol_text)} chars)")
     else:
-        print("EOL: no data found, using Wikipedia only")
+        print("EOL: no data found")
+
+    print("Fetching GBIF species descriptions...")
+    gbif_name, gbif_text = fetch_gbif_species_text(topic, wiki_title=wiki_title)
+    if gbif_text:
+        print(f"GBIF: '{gbif_name}' ({len(gbif_text)} chars)")
+    else:
+        print("GBIF: no descriptions found")
 
     reference = wiki_text[:MAX_WIKI_CHARS]
     if len(wiki_text) > MAX_WIKI_CHARS:
         reference += "\n[...truncated]"
     if eol_text:
         reference += f"\n\n[Encyclopedia of Life]\n{eol_text[:2000]}"
+    if gbif_text:
+        reference += f"\n\n[GBIF Species Descriptions]\n{gbif_text[:2000]}"
 
     template = PROMPT_TEMPLATE.read_text(encoding="utf-8")
     prompt = template.replace("{{TOPIC}}", topic).replace("{{WIKIPEDIA_TEXT}}", reference)

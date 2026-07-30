@@ -5,12 +5,15 @@ Animal → Titles → Script → Images → Assembly → Preview → Upload
 
 Requirements: pip install customtkinter pillow
 """
+import concurrent.futures
 import io, json, os, re, ssl, subprocess, sys, tempfile, threading, tkinter.messagebox, urllib.request
 import cv2
 from pathlib import Path
 
 import customtkinter as ctk
 from PIL import Image
+
+_CNW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 # ── Config ────────────────────────────────────────────────────────────────────
 OLLAMA_URL   = "http://localhost:11434/api/generate"
@@ -33,6 +36,71 @@ TW, TH    = 160, 220    # thumbnail display size (portrait)
 
 STEPS = ["Animal","Titles","Script","Images","Assembly","Preview","Upload"]
 
+VOICES = [
+    ("Emma (British F)",    "bf_emma"),
+    ("Isabella (British F)","bf_isabella"),
+    ("Heart (American F)",  "af_heart"),
+    ("Bella (American F)",  "af_bella"),
+    ("Nicole (American F)", "af_nicole"),
+    ("Sarah (American F)",  "af_sarah"),
+    ("George (British M)",  "bm_george"),
+    ("Lewis (British M)",   "bm_lewis"),
+    ("Adam (American M)",   "am_adam"),
+    ("Michael (American M)","am_michael"),
+]
+PREVIEW_TEXT  = "This creature has one of the most surprising abilities in the entire animal kingdom."
+SAMPLES_DIR   = _HERE / "voice_samples"
+TOPICS_FILE   = _HERE / "topics.txt"
+TIERS_FILE    = _HERE / "topics_tiers.json"
+
+
+def _load_tiers() -> dict:
+    """Returns {animal_name: tier_str} — coverage tiers from last Discover run."""
+    if not TIERS_FILE.exists():
+        return {}
+    try:
+        return json.loads(TIERS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_tiers(tiers: dict):
+    TIERS_FILE.write_text(json.dumps(tiers, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _load_channels() -> dict:
+    """Returns {key: display_name} from channels.json."""
+    p = _HERE / "channels.json"
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"faunaworks": "FaunaWorks"}
+
+
+def _load_topics() -> list[tuple[str, bool]]:
+    """Returns [(text, is_done), ...] — skips blank lines and comments."""
+    if not TOPICS_FILE.exists():
+        return []
+    result = []
+    for line in TOPICS_FILE.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.upper().startswith("DONE:"):
+            result.append((s[5:].strip(), True))
+        else:
+            result.append((s, False))
+    return result
+
+
+def _save_topics(topics: list[tuple[str, bool]]):
+    lines = ["# FaunaWorks topic queue — managed by the app"]
+    for text, done in topics:
+        lines.append(f"DONE: {text}" if done else text)
+    TOPICS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _ollama(prompt: str, tokens: int = 600) -> str:
@@ -45,19 +113,66 @@ def _ollama(prompt: str, tokens: int = 600) -> str:
         return json.loads(r.read()).get("response", "")
 
 
-def gen_titles(animal: str) -> list:
+def gen_titles(animal: str, status_cb=None) -> list:
+    from wikipedia_fetch import fetch_wikipedia_text
+    if status_cb:
+        status_cb("Fetching Wikipedia…")
+    wiki_snippet = ""
+    try:
+        _, wiki_text = fetch_wikipedia_text(animal)
+        wiki_snippet = wiki_text[:2500]
+    except SystemExit:
+        pass
+
+    grounding = (
+        f"\n\nWikipedia reference — use ONLY facts from this text to inspire titles:\n{wiki_snippet}"
+        if wiki_snippet else ""
+    )
+    if status_cb:
+        status_cb("Generating titles…")
     raw = _ollama(
-        f"YouTube Shorts title writer for FaunaWorks (animal channel).\n"
-        f"Animal: {animal}\nGenerate 5 title options. Rules:\n"
-        f"- Different surprising angle each\n- 6-10 words, no dashes, hyphens, or colons\n"
-        f"- Curiosity-gap (make someone stop scrolling)\n"
-        f'Return ONLY a JSON array: ["Title 1","Title 2","Title 3","Title 4","Title 5"]', 500
+        f"You are a YouTube Shorts title writer for FaunaWorks, an animal facts channel.\n"
+        f"Animal: {animal}\n"
+        f"Generate 5 title options. Each title MUST be based on a REAL, verifiable biological trait, "
+        f"ability, or behavior this animal actually has.\n\n"
+        f"STRICT RULES:\n"
+        f"- Ground every title in a real fact from the Wikipedia text below\n"
+        f"- NO invented scenarios: no pranks, parties, battles, drama, or human-framing\n"
+        f"- NO vague filler: no Amazing, Incredible, Shocking, Exposed\n"
+        f"- Curiosity-gap format — tease something real. Proven patterns:\n"
+        f"  'This [Animal] Can [Real Ability]'\n"
+        f"  'The [Animal] That [Real Behavior]'\n"
+        f"  'Why [Animal] [Surprising Fact]'\n"
+        f"- 6-10 words max. No dashes, hyphens, colons, or em dashes\n"
+        f"- Different surprising angle per title{grounding}\n\n"
+        f'Return ONLY a JSON array: ["Title 1","Title 2","Title 3","Title 4","Title 5"]', 600
     )
     m = re.search(r'\[.*?\]', raw, re.DOTALL)
     if not m:
         raise ValueError(f"No array in response: {raw[:150]}")
     cleaned = re.sub(r',(\s*[\]}])', r'\1', m.group())
     return [t for t in json.loads(cleaned) if isinstance(t, str)][:5]
+
+
+def brainstorm_animals(theme: str, count: int = 25) -> list[str]:
+    raw = _ollama(
+        f"Generate a list of {count} specific animal species that fit this theme: {theme}\n\n"
+        f"RULES:\n"
+        f"- Return ONLY a JSON array of animal common names, no explanation\n"
+        f"- Use specific names, not vague groups: 'bluefin tuna' not 'fish', 'monarch butterfly' not 'insect'\n"
+        f"- Include a mix of well-known and lesser-known real species\n"
+        f"- Each must be a real species a wildlife photographer could photograph in the wild\n"
+        f'Return ONLY: ["Animal 1", "Animal 2", ...]',
+        tokens=900,
+    )
+    m = re.search(r'\[.*?\]', raw, re.DOTALL)
+    if not m:
+        return []
+    try:
+        cleaned = re.sub(r',(\s*[\]}])', r'\1', m.group())
+        return [a for a in json.loads(cleaned) if isinstance(a, str)][:30]
+    except Exception:
+        return []
 
 
 def _extract(src: str, entry) -> tuple:
@@ -114,6 +229,35 @@ def _slug(title: str) -> str:
     return re.sub(r'\s+', '-', s).strip('-')[:60]
 
 
+# ── Icon ──────────────────────────────────────────────────────────────────────
+def _ensure_icon() -> Path | None:
+    ico_path = _HERE / "faunaworks.ico"
+    if ico_path.exists():
+        return ico_path
+    try:
+        from PIL import Image, ImageDraw
+        def _draw(s: int) -> Image.Image:
+            img = Image.new("RGBA", (s, s), (34, 197, 94, 255))
+            d = ImageDraw.Draw(img)
+            # paw: palm + 4 toes
+            cx, cy = s // 2, s * 58 // 100
+            pr = s * 22 // 100
+            d.ellipse([cx - pr, cy - pr, cx + pr, cy + pr], fill="white")
+            tr = s * 11 // 100
+            for ox, oy in [(-s*24//100, -s*32//100),
+                           (-s*8//100,  -s*40//100),
+                           ( s*8//100,  -s*40//100),
+                           ( s*24//100, -s*32//100)]:
+                d.ellipse([cx+ox-tr, cy+oy-tr, cx+ox+tr, cy+oy+tr], fill="white")
+            return img
+        base = _draw(256)
+        base.save(str(ico_path), format="ICO",
+                  sizes=[(256, 256), (64, 64), (32, 32), (16, 16)])
+        return ico_path
+    except Exception:
+        return None
+
+
 # ── App shell ─────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -125,13 +269,32 @@ class App(ctk.CTk):
         self.title("FaunaWorks Pipeline")
         self.geometry("1040x780")
         self.resizable(True, True)
+        # Windows: set AppUserModelID so taskbar shows our icon, not the generic Python one
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("faunaworks.pipeline.v1")
+        except Exception:
+            pass
+        ico = _ensure_icon()
+        if ico:
+            # defer until after window is mapped — iconbitmap fails if called too early in CTk
+            self.after(200, lambda: self._set_icon(str(ico)))
+
+    def _set_icon(self, ico_path: str):
+        try:
+            self.iconbitmap(ico_path)
+        except Exception:
+            pass
         # shared pipeline state
         self.animal        = ""
+        self.voice         = "bf_emma"
+        self.channel       = next(iter(_load_channels()))
         self.titles        = []
         self.chosen_title  = ""
         self.script        = {}
         self.pool          = []   # [(src, url, thumb_url)]
         self.assigned      = {}   # {lid: pool_idx}
+        self._kokoro       = None  # cached Kokoro instance for voice preview
 
         hdr = ctk.CTkFrame(self, height=50, fg_color="#0e0e20")
         hdr.pack(fill="x")
@@ -188,39 +351,312 @@ def _back_btn(row, app, cls):
                   command=lambda: app.goto(cls)).pack(side="left", padx=6)
 
 
+_TIER_DOT = {"green": "#44ff66", "yellow": "#ffee44", "red": "#ff5544"}
+
 # ── S1: Animal input ──────────────────────────────────────────────────────────
 class S1_Animal(Base):
     def on_enter(self):
         p = self._reset()
+
+        # Channel selector — top of step
+        channels    = _load_channels()
+        ch_names    = list(channels.values())
+        cur_ch_name = channels.get(self.app.channel, ch_names[0] if ch_names else "FaunaWorks")
+        self._ch_var = ctk.StringVar(value=cur_ch_name)
+        crow = ctk.CTkFrame(p, fg_color="transparent")
+        crow.pack(pady=(10, 0))
+        ctk.CTkLabel(crow, text="Channel:", font=("Arial", 13)).pack(side="left", padx=(0, 8))
+        ctk.CTkOptionMenu(crow, values=ch_names or ["FaunaWorks"], variable=self._ch_var,
+                          width=200, command=self._on_channel_change).pack(side="left")
+
         _h1(p, "What animal?")
         _sub(p, "Type any animal — AI finds the best angle")
         self._e = ctk.CTkEntry(p, placeholder_text="e.g. elephant",
                                width=320, font=("Arial", 15), height=42)
-        self._e.pack(pady=22)
+        self._e.pack(pady=(16, 8))
+        if getattr(self.app, "animal", ""):
+            self._e.insert(0, self.app.animal)
         self._e.focus()
         self._e.bind("<Return>", lambda _: self._go())
+
+        # Topic queue
+        self._build_queue(p)
+
+        # Voice selector row
+        vrow = ctk.CTkFrame(p, fg_color="transparent")
+        vrow.pack(pady=(4, 4))
+        ctk.CTkLabel(vrow, text="Voice:", font=("Arial", 13)).pack(side="left", padx=(0, 8))
+        voice_names = [v[0] for v in VOICES]
+        cur_name = next((v[0] for v in VOICES if v[1] == self.app.voice), voice_names[0])
+        self._voice_var = ctk.StringVar(value=cur_name)
+        ctk.CTkOptionMenu(vrow, values=voice_names, variable=self._voice_var,
+                          width=230, command=self._on_voice_change).pack(side="left", padx=(0, 10))
+        self._prev_btn = ctk.CTkButton(vrow, text="Play Sample", width=110, height=34,
+                                       fg_color="#3a3a5a", command=self._preview_voice)
+        self._prev_btn.pack(side="left")
+
+        self._prev_lbl = ctk.CTkLabel(p, text="", text_color="#888888", font=("Arial", 11))
+        self._prev_lbl.pack(pady=(0, 8))
+
         self._btn = ctk.CTkButton(p, text="Generate Titles →",
                                   width=210, height=42, command=self._go)
         self._btn.pack()
         self._lbl = ctk.CTkLabel(p, text="", text_color="#888888")
-        self._lbl.pack(pady=12)
+        self._lbl.pack(pady=8)
+
+        # Pre-generate all missing voice samples in background
+        threading.Thread(target=self._prepare_samples, daemon=True).start()
+
+    # ── Topic queue ──────────────────────────────────────────────────────────
+    def _build_queue(self, p):
+        outer = ctk.CTkFrame(p, fg_color="#111122", corner_radius=8)
+        outer.pack(fill="x", padx=60, pady=(0, 4))
+
+        hdr = ctk.CTkFrame(outer, fg_color="transparent")
+        hdr.pack(fill="x", padx=8, pady=(6, 2))
+        ctk.CTkLabel(hdr, text="Topic Queue", font=("Arial", 11, "bold"),
+                     text_color="#aaaaaa").pack(side="left")
+        ctk.CTkLabel(hdr, text="click to use", font=("Arial", 10),
+                     text_color="#555555").pack(side="left", padx=6)
+
+        self._qframe = ctk.CTkScrollableFrame(outer, height=110, fg_color="transparent")
+        self._qframe.pack(fill="x", padx=4)
+
+        add_row = ctk.CTkFrame(outer, fg_color="transparent")
+        add_row.pack(fill="x", padx=8, pady=(2, 2))
+        self._qadd = ctk.CTkEntry(add_row, placeholder_text="Add animal…",
+                                  height=28, font=("Arial", 12))
+        self._qadd.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self._qadd.bind("<Return>", lambda _: self._add_topic())
+        ctk.CTkButton(add_row, text="Add", width=54, height=28,
+                      command=self._add_topic).pack(side="left")
+
+        ctk.CTkFrame(outer, fg_color="#1a1a2a", height=1).pack(fill="x", padx=8, pady=(4, 0))
+
+        disc_row = ctk.CTkFrame(outer, fg_color="transparent")
+        disc_row.pack(fill="x", padx=8, pady=(4, 2))
+        self._disc_entry = ctk.CTkEntry(disc_row, placeholder_text="Discover theme… e.g. ocean creatures",
+                                        height=28, font=("Arial", 12))
+        self._disc_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self._disc_entry.bind("<Return>", lambda _: self._discover_topics())
+        self._disc_btn = ctk.CTkButton(disc_row, text="Discover ↺", width=90, height=28,
+                                       command=self._discover_topics)
+        self._disc_btn.pack(side="left")
+
+        self._disc_lbl = ctk.CTkLabel(outer, text="", text_color="#666688", font=("Arial", 10))
+        self._disc_lbl.pack(pady=(0, 4))
+
+        self._refresh_queue()
+
+    def _refresh_queue(self):
+        for w in self._qframe.winfo_children():
+            w.destroy()
+        topics = _load_topics()
+        tiers  = _load_tiers()
+        pending = [(i, t) for i, (t, done) in enumerate(topics) if not done]
+        if not pending:
+            ctk.CTkLabel(self._qframe, text="No pending topics",
+                         text_color="#444444", font=("Arial", 11)).pack(pady=4)
+            return
+        for orig_idx, text in pending:
+            row = ctk.CTkFrame(self._qframe, fg_color="transparent")
+            row.pack(fill="x", pady=1)
+            tier = tiers.get(text)
+            if tier:
+                ctk.CTkLabel(row, text="●", font=("Arial", 12),
+                             text_color=_TIER_DOT[tier], width=18).pack(side="left", padx=(2, 0))
+            ctk.CTkButton(row, text=text, anchor="w", height=26,
+                          font=("Arial", 12), fg_color="#1e1e35",
+                          hover_color="#2a2a50",
+                          command=lambda t=text: self._pick_topic(t)
+                          ).pack(side="left", fill="x", expand=True, padx=(0, 4))
+            ctk.CTkButton(row, text="✕", width=26, height=26,
+                          fg_color="#3a2020", hover_color="#5a3030",
+                          font=("Arial", 11),
+                          command=lambda i=orig_idx: self._delete_topic(i)
+                          ).pack(side="left")
+
+    def _pick_topic(self, text: str):
+        self._e.delete(0, "end")
+        self._e.insert(0, text)
+        self._e.focus()
+
+    def _add_topic(self):
+        text = self._qadd.get().strip()
+        if not text:
+            return
+        topics = _load_topics()
+        if any(t == text for t, _ in topics):
+            self._qadd.delete(0, "end")
+            return
+        topics.append((text, False))
+        _save_topics(topics)
+        self._qadd.delete(0, "end")
+        self._refresh_queue()
+
+    def _delete_topic(self, idx: int):
+        topics = _load_topics()
+        if 0 <= idx < len(topics):
+            topics.pop(idx)
+            _save_topics(topics)
+        self._refresh_queue()
+
+    def _prepare_samples(self):
+        """Generate and cache WAV samples for all voices. Runs once in background on S1 entry."""
+        SAMPLES_DIR.mkdir(exist_ok=True)
+        missing = [(name, vid) for name, vid in VOICES
+                   if not (SAMPLES_DIR / f"{vid}.wav").exists()]
+        if not missing:
+            return
+        try:
+            import soundfile as sf
+            from kokoro_onnx import Kokoro
+
+            model_p  = _HERE / "kokoro-v1.0.int8.onnx"
+            voices_p = _HERE / "voices-v1.0.bin"
+            if not model_p.exists() or not voices_p.exists():
+                self.after(0, lambda: self._prev_lbl.configure(
+                    text="Model files missing — run generate_audio.py first",
+                    text_color="#ff8855"))
+                return
+
+            if self.app._kokoro is None:
+                n = len(missing)
+                self.after(0, lambda: self._prev_lbl.configure(
+                    text=f"Loading voice model… (preparing {n} sample(s))"))
+                self.app._kokoro = Kokoro(str(model_p), str(voices_p))
+
+            total = len(missing)
+            for i, (name, vid) in enumerate(missing, 1):
+                sample_path = SAMPLES_DIR / f"{vid}.wav"
+                if sample_path.exists():
+                    continue
+                self.after(0, lambda i=i, t=total, nm=name: self._prev_lbl.configure(
+                    text=f"Preparing sample {i}/{t}: {nm}…"))
+                samples, sr = self.app._kokoro.create(
+                    PREVIEW_TEXT, voice=vid, speed=0.85, lang="en-us")
+                sf.write(str(sample_path), samples, sr)
+
+            self.after(0, lambda: self._prev_lbl.configure(text=""))
+        except Exception as e:
+            self.after(0, lambda err=e: self._prev_lbl.configure(
+                text=f"Sample prep error: {err}", text_color="#ff8855"))
+
+    def _on_channel_change(self, display_name: str):
+        channels = _load_channels()
+        for k, v in channels.items():
+            if v == display_name:
+                self.app.channel = k
+                return
+
+    def _on_voice_change(self, name: str):
+        self.app.voice = next(v[1] for v in VOICES if v[0] == name)
+
+    def _preview_voice(self):
+        name = self._voice_var.get()
+        voice_id = next(v[1] for v in VOICES if v[0] == name)
+        sample_path = SAMPLES_DIR / f"{voice_id}.wav"
+        self._prev_btn.configure(state="disabled", text="Playing…")
+
+        def run():
+            try:
+                import winsound
+                if not sample_path.exists():
+                    self.after(0, lambda: self._prev_btn.configure(
+                        state="normal", text="Play Sample"))
+                    self.after(0, lambda: self._prev_lbl.configure(
+                        text="Still preparing — wait a moment", text_color="#ff8855"))
+                    return
+                winsound.PlaySound(str(sample_path), winsound.SND_FILENAME)
+                self.after(0, lambda: self._prev_btn.configure(state="normal", text="Play Sample"))
+            except Exception as e:
+                self.after(0, lambda err=e: (
+                    self._prev_lbl.configure(text=f"Error: {err}", text_color="#ff5555"),
+                    self._prev_btn.configure(state="normal", text="Play Sample"),
+                ))
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _go(self):
         a = self._e.get().strip()
         if not a:
             return
         self.app.animal = a
-        self._btn.configure(state="disabled", text="Calling Ollama…")
-        self._lbl.configure(text="Generating titles…", text_color="#888888")
+        self._on_voice_change(self._voice_var.get())   # ensure voice saved
+        self._btn.configure(state="disabled", text="Working…")
+        self._lbl.configure(text="Fetching Wikipedia…", text_color="#888888")
+
+        def _status(msg):
+            self.after(0, lambda m=msg: self._lbl.configure(text=m, text_color="#888888"))
 
         def run():
             try:
-                self.app.titles = gen_titles(a)
+                self.app.titles = gen_titles(a, status_cb=_status)
                 self.after(0, lambda: self.app.goto(S2_Titles))
             except Exception as e:
                 self.after(0, lambda err=e: (
                     self._lbl.configure(text=f"Error: {err}", text_color="#ff5555"),
                     self._btn.configure(state="normal", text="Generate Titles →"),
+                ))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _discover_topics(self):
+        theme = self._disc_entry.get().strip()
+        if not theme:
+            return
+        self._disc_btn.configure(state="disabled", text="Working…")
+        self._disc_lbl.configure(text="Asking Ollama…", text_color="#666688")
+
+        def run():
+            try:
+                animals = brainstorm_animals(theme)
+                if not animals:
+                    self.after(0, lambda: (
+                        self._disc_lbl.configure(text="No animals returned — try rephrasing", text_color="#ff5555"),
+                        self._disc_btn.configure(state="normal", text="Discover ↺"),
+                    ))
+                    return
+                self.after(0, lambda n=len(animals): self._disc_lbl.configure(
+                    text=f"Got {n} candidates — checking coverage…", text_color="#666688"))
+
+                from coverage_check import check_coverage
+                results = []
+                done = [0]
+                total = len(animals)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+                    futures = {ex.submit(check_coverage, a): a for a in animals}
+                    for fut in concurrent.futures.as_completed(futures):
+                        results.append(fut.result())
+                        done[0] += 1
+                        self.after(0, lambda d=done[0], t=total: self._disc_lbl.configure(
+                            text=f"Checking coverage… {d}/{t}", text_color="#666688"))
+
+                results.sort(key=lambda r: ({"green": 0, "yellow": 1, "red": 2}[r["tier"]], -r["inat"]))
+
+                topics = _load_topics()
+                existing = {t.lower() for t, _ in topics}
+                tiers = _load_tiers()
+                added = 0
+                for r in results:
+                    if r["animal"].lower() not in existing:
+                        topics.append((r["animal"], False))
+                        existing.add(r["animal"].lower())
+                        added += 1
+                    tiers[r["animal"]] = r["tier"]
+                _save_topics(topics)
+                _save_tiers(tiers)
+
+                self.after(0, lambda a=added: (
+                    self._disc_lbl.configure(text=f"Added {a} new animals to queue", text_color="#44bb66"),
+                    self._disc_btn.configure(state="normal", text="Discover ↺"),
+                    self._disc_entry.delete(0, "end"),
+                    self._refresh_queue(),
+                ))
+            except Exception as e:
+                self.after(0, lambda err=e: (
+                    self._disc_lbl.configure(text=f"Error: {err}", text_color="#ff5555"),
+                    self._disc_btn.configure(state="normal", text="Discover ↺"),
                 ))
 
         threading.Thread(target=run, daemon=True).start()
@@ -274,7 +710,9 @@ class S2_Titles(Base):
                 proc = subprocess.Popen(
                     [sys.executable, "generate_script.py", self.app.animal, "--title", title],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, cwd=_HERE
+                    text=True, encoding="utf-8", cwd=_HERE,
+                    env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                    creationflags=_CNW,
                 )
                 for line in proc.stdout:
                     line = line.rstrip()
@@ -415,7 +853,9 @@ class S4_Images(Base):
             self.after(0, lambda: self._stlbl.configure(text="Running fetch_images.py…"))
             r = subprocess.run(
                 [sys.executable, "fetch_images.py"],
-                capture_output=True, text=True, cwd=Path(__file__).parent
+                capture_output=True, text=True, encoding="utf-8", cwd=Path(__file__).parent,
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                creationflags=_CNW,
             )
             if r.returncode != 0:
                 raise RuntimeError((r.stderr or r.stdout)[-400:])
@@ -712,12 +1152,13 @@ class S5_Assembly(Base):
         self._log.configure(state="disabled")
 
     def _run(self):
+        voice = getattr(self.app, "voice", "bf_emma")
         pipeline = [
-            ("generate_audio.py", "Generating audio…",  0.45),
-            ("assemble.py",       "Assembling video…",  0.95),
+            (["generate_audio.py", "--voice", voice], "Generating audio…",  0.45),
+            (["assemble.py"],                          "Assembling video…",  0.95),
         ]
         try:
-            for name, label, end_pct in pipeline:
+            for script_args, label, end_pct in pipeline:
                 start_pct = end_pct - 0.45
                 self.after(0, lambda l=label, pv=start_pct: (
                     self._stlbl.configure(text=l),
@@ -725,9 +1166,11 @@ class S5_Assembly(Base):
                     self._append(f"\n▶ {l}"),
                 ))
                 proc = subprocess.Popen(
-                    [sys.executable, name],
+                    [sys.executable] + script_args,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, cwd=Path(__file__).parent
+                    text=True, encoding="utf-8", cwd=Path(__file__).parent,
+                    env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                    creationflags=_CNW,
                 )
                 for line in proc.stdout:
                     line = line.rstrip()
@@ -735,7 +1178,7 @@ class S5_Assembly(Base):
                         self.after(0, lambda l=line: self._append(l))
                 proc.wait()
                 if proc.returncode != 0:
-                    raise RuntimeError(f"{name} exited with code {proc.returncode}")
+                    raise RuntimeError(f"{script_args[0]} exited with code {proc.returncode}")
                 self.after(0, lambda pv=end_pct: self._bar.set(pv))
 
             self.after(0, lambda: (
@@ -791,28 +1234,95 @@ class S7_Upload(Base):
         self._sc_p  = sc_p
 
         _h1(p, "Upload to YouTube")
+
+        # ── Channel info banner ───────────────────────────────────────────────
+        channels = _load_channels()
+        ch_key   = getattr(self.app, "channel", next(iter(channels)))
+        ch_name  = channels.get(ch_key, ch_key)
+        ch_bar = ctk.CTkFrame(p, fg_color="#0d1f0d", corner_radius=8)
+        ch_bar.pack(fill="x", padx=60, pady=(0, 6))
+        ch_inner = ctk.CTkFrame(ch_bar, fg_color="transparent")
+        ch_inner.pack(fill="x", padx=14, pady=8)
+        ctk.CTkLabel(ch_inner, text="Channel:", font=("Arial", 12),
+                     text_color="#888888").pack(side="left")
+        ctk.CTkLabel(ch_inner, text=f"  {ch_name}", font=("Arial", 13, "bold"),
+                     text_color="#44ff88").pack(side="left")
+        self._ch_stat_lbl = ctk.CTkLabel(ch_inner, text="",
+                                          font=("Arial", 11), text_color="#556655")
+        self._ch_stat_lbl.pack(side="left", padx=(10, 0))
+        threading.Thread(target=self._fetch_ch_info, args=(ch_key,), daemon=True).start()
+
         _sub(p, f"Title: {title}")
         ctk.CTkLabel(p, text=str(vid_p), text_color="#555555",
                      font=("Arial", 11)).pack(pady=2)
 
+        # ── Schedule options ──────────────────────────────────────────────────
+        sframe = ctk.CTkFrame(p, fg_color="#111122", corner_radius=8)
+        sframe.pack(fill="x", padx=60, pady=(10, 4))
+        self._sched_var = ctk.StringVar(value="now")
+
+        row_now = ctk.CTkFrame(sframe, fg_color="transparent")
+        row_now.pack(fill="x", padx=14, pady=(10, 4))
+        ctk.CTkRadioButton(row_now, text="Publish immediately",
+                           variable=self._sched_var, value="now",
+                           command=self._on_sched_change).pack(side="left")
+
+        row_later = ctk.CTkFrame(sframe, fg_color="transparent")
+        row_later.pack(fill="x", padx=14, pady=(0, 10))
+        ctk.CTkRadioButton(row_later, text="Schedule:",
+                           variable=self._sched_var, value="later",
+                           command=self._on_sched_change).pack(side="left", padx=(0, 10))
+        self._date_entry = ctk.CTkEntry(row_later, placeholder_text="2026-08-01  14:00",
+                                        width=175, font=("Arial", 12), state="disabled")
+        self._date_entry.pack(side="left")
+        ctk.CTkLabel(row_later, text="UTC", font=("Arial", 11),
+                     text_color="#555577").pack(side="left", padx=6)
+
+        # ── Upload button ─────────────────────────────────────────────────────
         self._btn = ctk.CTkButton(p, text="Upload Now", width=220, height=44,
                                   command=self._upload)
-        self._btn.pack(pady=20)
+        self._btn.pack(pady=14)
 
-        self._log = ctk.CTkTextbox(p, height=180, font=("Consolas", 11))
-        self._log.pack(fill="x", padx=24, pady=6)
+        self._log = ctk.CTkTextbox(p, height=130, font=("Consolas", 11))
+        self._log.pack(fill="x", padx=24, pady=4)
         self._log.configure(state="disabled")
 
         self._urllbl = ctk.CTkLabel(p, text="", font=("Arial", 13, "bold"),
                                     text_color="#44ff66")
-        self._urllbl.pack(pady=6)
+        self._urllbl.pack(pady=4)
 
-        row = ctk.CTkFrame(p, fg_color="transparent")
-        row.pack(pady=4)
-        _back_btn(row, self.app, S6_Preview)
-        ctk.CTkButton(row, text="New Video ↺", width=140, height=34,
+        nav = ctk.CTkFrame(p, fg_color="transparent")
+        nav.pack(pady=4)
+        _back_btn(nav, self.app, S6_Preview)
+        ctk.CTkButton(nav, text="New Video ↺", width=140, height=34,
                       fg_color="#1a4a1a",
                       command=lambda: self.app.goto(S1_Animal)).pack(side="left", padx=6)
+
+    def _on_sched_change(self):
+        later = self._sched_var.get() == "later"
+        self._date_entry.configure(state="normal" if later else "disabled")
+        self._btn.configure(text="Schedule Upload" if later else "Upload Now")
+
+    def _fetch_ch_info(self, ch_key: str):
+        """Query upload.py --info to get subscriber count. Silent on failure."""
+        try:
+            r = subprocess.run(
+                [sys.executable, "upload.py", "--info", "--channel", ch_key],
+                capture_output=True, text=True, encoding="utf-8",
+                cwd=Path(__file__).parent,
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                timeout=30, creationflags=_CNW,
+            )
+            for line in r.stdout.splitlines():
+                if line.startswith("CHANNEL:"):
+                    # "CHANNEL: FaunaWorks | 1234 subscribers"
+                    parts = line[len("CHANNEL:"):].strip().split("|")
+                    stat  = parts[1].strip() if len(parts) > 1 else ""
+                    if stat:
+                        self.after(0, lambda s=stat:
+                                   self._ch_stat_lbl.configure(text=f"— {s}"))
+        except Exception:
+            pass
 
     def _append(self, t: str):
         self._log.configure(state="normal")
@@ -821,16 +1331,33 @@ class S7_Upload(Base):
         self._log.configure(state="disabled")
 
     def _upload(self):
-        self._btn.configure(state="disabled", text="Uploading…")
+        publish_at = None
+        if self._sched_var.get() == "later":
+            publish_at = self._date_entry.get().strip()
+            if not publish_at:
+                tkinter.messagebox.showerror("Schedule Error",
+                                             "Enter a date/time (YYYY-MM-DD HH:MM UTC).")
+                return
+
+        ch_key = getattr(self.app, "channel", next(iter(_load_channels())))
+        label  = "Scheduling…" if publish_at else "Uploading…"
+        self._btn.configure(state="disabled", text=label)
 
         def run():
             try:
+                cmd = [sys.executable, "upload.py",
+                       "--file",    str(self._vid_p),
+                       "--script",  str(self._sc_p),
+                       "--channel", ch_key]
+                if publish_at:
+                    cmd += ["--publish-at", publish_at]
+
                 proc = subprocess.Popen(
-                    [sys.executable, "upload.py",
-                     "--file", str(self._vid_p),
-                     "--script", str(self._sc_p)],
+                    cmd,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, cwd=Path(__file__).parent
+                    text=True, encoding="utf-8", cwd=Path(__file__).parent,
+                    env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                    creationflags=_CNW,
                 )
                 url = ""
                 for line in proc.stdout:
@@ -841,14 +1368,24 @@ class S7_Upload(Base):
                         url = line.split()[-1]
                 proc.wait()
                 if proc.returncode != 0:
-                    raise RuntimeError("upload.py failed")
+                    raise RuntimeError("upload.py failed — see log above")
                 if url:
                     self.after(0, lambda u=url: self._urllbl.configure(text=u))
-                self.after(0, lambda: self._btn.configure(state="disabled", text="Uploaded ✓"))
+                # Mark animal done in queue only after successful upload
+                animal = getattr(self.app, "animal", "")
+                if animal:
+                    topics = _load_topics()
+                    for i, (text, is_done) in enumerate(topics):
+                        if not is_done and text.lower() == animal.lower():
+                            topics[i] = (text, True)
+                            _save_topics(topics)
+                            break
+                done_lbl = "Scheduled ✓" if publish_at else "Uploaded ✓"
+                self.after(0, lambda: self._btn.configure(state="disabled", text=done_lbl))
             except Exception as e:
                 self.after(0, lambda err=e: (
                     self._append(f"Error: {err}"),
-                    self._btn.configure(state="normal", text="Retry Upload"),
+                    self._btn.configure(state="normal", text="Retry"),
                 ))
 
         threading.Thread(target=run, daemon=True).start()
