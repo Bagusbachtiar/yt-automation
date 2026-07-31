@@ -6,12 +6,14 @@ Animal → Titles → Script → Images → Assembly → Preview → Upload
 Requirements: pip install customtkinter pillow
 """
 import concurrent.futures
-import io, json, os, re, ssl, subprocess, sys, tempfile, threading, tkinter.messagebox, urllib.request
+import io, json, os, re, shutil, ssl, subprocess, sys, tempfile, threading, tkinter.messagebox, urllib.request
 import cv2
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import customtkinter as ctk
 from PIL import Image
+from tkcalendar import DateEntry as _DateEntry
 
 _CNW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
@@ -24,12 +26,13 @@ CANDS_JSON   = _HERE / "image_candidates.json"
 IMAGES_DIR   = _HERE / "images"
 OUTPUT_MP4   = _HERE / "output.mp4"
 VIDEOS_OUT   = _HERE / "videos_output"
+_WIB         = timezone(timedelta(hours=7))   # Jakarta — fixed UTC+7, no DST
 
 _SSL = ssl.create_default_context()
 _SSL.check_hostname = False
 _SSL.verify_mode    = ssl.CERT_NONE
 
-SRC_ORDER = ["wiki_infobox","wikipedia","wiki_keyword","pexels","pixabay","pexels_video","commons","flickr"]
+SRC_ORDER = ["wiki_infobox","wikipedia","pexels","pixabay","inaturalist","gbif","pexels_video","commons","flickr","wiki_keyword"]
 _VID      = {"pexels_video"}
 MAX_POOL  = 30
 TW, TH    = 160, 220    # thumbnail display size (portrait)
@@ -134,7 +137,7 @@ def gen_titles(animal: str, status_cb=None) -> list:
         f"You are a YouTube Shorts title writer for FaunaWorks, an animal facts channel.\n"
         f"Animal: {animal}\n"
         f"Generate 5 title options. Each title MUST be based on a REAL, verifiable biological trait, "
-        f"ability, or behavior this animal actually has.\n\n"
+        f"ability, behavior, or ecological role this animal actually has.\n\n"
         f"STRICT RULES:\n"
         f"- Ground every title in a real fact from the Wikipedia text below\n"
         f"- NO invented scenarios: no pranks, parties, battles, drama, or human-framing\n"
@@ -143,8 +146,12 @@ def gen_titles(animal: str, status_cb=None) -> list:
         f"  'This [Animal] Can [Real Ability]'\n"
         f"  'The [Animal] That [Real Behavior]'\n"
         f"  'Why [Animal] [Surprising Fact]'\n"
+        f"  'How [Animal] [Protects/Saves/Feeds/Controls] [Ecosystem/Plants/Species]'\n"
+        f"  'Why [Ecosystem/Garden/Ocean] Needs [Animal]'\n"
+        f"- REQUIRED: at least 2 of the 5 titles must focus on the animal's ecological role or "
+        f"benefit (pest control, pollination, food chain, seed dispersal, soil health, etc.)\n"
         f"- 6-10 words max. No dashes, hyphens, colons, or em dashes\n"
-        f"- Different surprising angle per title{grounding}\n\n"
+        f"- Each title must cover a different angle{grounding}\n\n"
         f'Return ONLY a JSON array: ["Title 1","Title 2","Title 3","Title 4","Title 5"]', 600
     )
     m = re.search(r'\[.*?\]', raw, re.DOTALL)
@@ -198,9 +205,12 @@ def pool_from(candidates: dict) -> list:
                     seen.add(url); pool.append((src, url, thumb)); return True
         return False
 
-    # Phase 1 — per line: 1 wikipedia photo + 1 video + 1 pexels photo
+    # Phase 1 — per line: 1 wiki photo + 1 biodiversity photo + 1 video + 1 stock photo
+    # wiki_keyword excluded from Phase 1: for animals it finds wrong Wikipedia articles
+    # (airline "American Eagle", military jets "F-15 Eagle", NSFW "spread eagle")
     for data in candidates.values():
-        _take_one(data, ["wiki_infobox", "wikipedia", "wiki_keyword"])
+        _take_one(data, ["wiki_infobox", "wikipedia"])
+        _take_one(data, ["inaturalist", "gbif"])
         _take_one(data, ["pexels_video"])
         _take_one(data, ["pexels", "pixabay"])
 
@@ -368,6 +378,21 @@ class S1_Animal(Base):
         ctk.CTkLabel(crow, text="Channel:", font=("Arial", 13)).pack(side="left", padx=(0, 8))
         ctk.CTkOptionMenu(crow, values=ch_names or ["FaunaWorks"], variable=self._ch_var,
                           width=200, command=self._on_channel_change).pack(side="left")
+
+        # Channel avatar + email row
+        self._ch_card = ctk.CTkFrame(p, fg_color="transparent")
+        self._ch_card.pack(pady=(4, 0))
+        self._ch_avatar_lbl = ctk.CTkLabel(self._ch_card, text="○", width=36, height=36,
+                                            font=("Arial", 20), text_color="#7777aa")
+        self._ch_avatar_lbl.pack(side="left", padx=(0, 6))
+        self._ch_email_lbl = ctk.CTkLabel(self._ch_card, text="fetching account…",
+                                           font=("Arial", 11), text_color="#8888aa")
+        self._ch_email_lbl.pack(side="left")
+        self._ch_avatar_img = None  # prevent GC
+
+        channels = _load_channels()
+        ch_key = next((k for k, v in channels.items() if v == cur_ch_name), self.app.channel)
+        threading.Thread(target=self._fetch_s1_ch_info, args=(ch_key,), daemon=True).start()
 
         _h1(p, "What animal?")
         _sub(p, "Type any animal — AI finds the best angle")
@@ -547,7 +572,42 @@ class S1_Animal(Base):
         for k, v in channels.items():
             if v == display_name:
                 self.app.channel = k
+                self._ch_email_lbl.configure(text="fetching account…", text_color="#8888aa")
+                self._ch_avatar_lbl.configure(image=None, text="○", text_color="#7777aa")
+                threading.Thread(target=self._fetch_s1_ch_info, args=(k,), daemon=True).start()
                 return
+
+    def _fetch_s1_ch_info(self, ch_key: str):
+        try:
+            r = subprocess.run(
+                [sys.executable, "upload.py", "--info", "--channel", ch_key],
+                capture_output=True, text=True, encoding="utf-8",
+                cwd=_HERE, env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                timeout=30, creationflags=_CNW,
+            )
+            thumb_url = ""
+            for line in r.stdout.splitlines():
+                if line.startswith("THUMBNAIL:"):
+                    thumb_url = line[len("THUMBNAIL:"):].strip()
+            ctk_img = None
+            if thumb_url:
+                try:
+                    img = Image.open(io.BytesIO(fetch_bytes(thumb_url))).convert("RGBA")
+                    img = img.resize((36, 36), Image.LANCZOS)
+                    ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(36, 36))
+                except Exception:
+                    pass
+            def update(ci=ctk_img):
+                try:
+                    if ci:
+                        self._ch_avatar_img = ci
+                        self._ch_avatar_lbl.configure(image=ci, text="")
+                    self._ch_email_lbl.configure(text="")
+                except Exception:
+                    pass
+            self.after(0, update)
+        except Exception:
+            pass
 
     def _on_voice_change(self, name: str):
         self.app.voice = next(v[1] for v in VOICES if v[0] == name)
@@ -582,7 +642,13 @@ class S1_Animal(Base):
         if not a:
             return
         self.app.animal = a
+        self.app.script = {}   # clear stale script from previous video
         self._on_voice_change(self._voice_var.get())   # ensure voice saved
+        # Clear stale temp files so old media doesn't bleed into new video
+        for d in (IMAGES_DIR, _HERE / "audio"):
+            shutil.rmtree(d, ignore_errors=True)
+            d.mkdir(exist_ok=True)
+        CANDS_JSON.unlink(missing_ok=True)
         self._btn.configure(state="disabled", text="Working…")
         self._lbl.configure(text="Fetching Wikipedia…", text_color="#888888")
 
@@ -679,6 +745,10 @@ class S2_Titles(Base):
         btn_row = ctk.CTkFrame(p, fg_color="transparent")
         btn_row.pack()
         _back_btn(btn_row, self.app, S1_Animal)
+        self._regen_btn = ctk.CTkButton(btn_row, text="Regenerate ↺", width=140, height=36,
+                                        fg_color="#2a2a1a", hover_color="#3a3a28",
+                                        command=self._regen)
+        self._regen_btn.pack(side="left", padx=6)
         self._btn = ctk.CTkButton(btn_row, text="Generate Script →",
                                   width=200, height=36,
                                   command=lambda: self._go(var.get()))
@@ -694,6 +764,22 @@ class S2_Titles(Base):
         self._log.insert("end", text + "\n")
         self._log.see("end")
         self._log.configure(state="disabled")
+
+    def _regen(self):
+        self._regen_btn.configure(state="disabled", text="Working…")
+        self._lbl.configure(text="Generating fresh titles…", text_color="#888888")
+
+        def run():
+            try:
+                self.app.titles = gen_titles(self.app.animal)
+                self.after(0, lambda: self.app.goto(S2_Titles))
+            except Exception as e:
+                self.after(0, lambda err=e: (
+                    self._lbl.configure(text=f"Error: {err}", text_color="#ff5555"),
+                    self._regen_btn.configure(state="normal", text="Regenerate ↺"),
+                ))
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _go(self, title: str):
         if not title:
@@ -722,6 +808,14 @@ class S2_Titles(Base):
                 if proc.returncode != 0:
                     raise RuntimeError(f"generate_script.py exited {proc.returncode} — see log above")
                 self.app.script = json.loads(SCRIPT_JSON.read_text(encoding="utf-8"))
+                # Catch LLM returning wrong animal (e.g. cached jellyfish content for firefly input)
+                got = self.app.script.get("animal", "").strip().lower()
+                want = self.app.animal.strip().lower()
+                if got and got != want:
+                    raise RuntimeError(
+                        f"Script is about '{self.app.script.get('animal')}', not '{self.app.animal}'. "
+                        "Ollama returned wrong content — try generating again."
+                    )
                 self.app.script["title"] = title
                 SCRIPT_JSON.write_text(json.dumps(self.app.script, indent=2, ensure_ascii=False), encoding="utf-8")
                 self.after(0, lambda: self.app.goto(S3_Script))
@@ -739,6 +833,14 @@ class S3_Script(Base):
     def on_enter(self):
         p = self._reset()
         sc = self.app.script
+        # Guard: if script is stale or mismatched, send user back rather than silently showing wrong content
+        got = sc.get("animal", "").strip().lower()
+        want = getattr(self.app, "animal", "").strip().lower()
+        if not sc.get("lines") or (got and want and got != want):
+            ctk.CTkLabel(p, text=f"Script mismatch (got '{got}', expected '{want}'). Go back.",
+                         text_color="#ff5555").pack(pady=20)
+            _back_btn(p, self.app, S2_Titles)
+            return
         _h1(p, "Review Script")
         _sub(p, f"Title: {sc.get('title', '')}")
         scroll = ctk.CTkScrollableFrame(p, label_text="Narration lines — click to edit")
@@ -842,7 +944,7 @@ class S4_Images(Base):
                         continue
                     sx, sy = sf.winfo_rootx(), sf.winfo_rooty()
                     if sx <= x <= sx + sf.winfo_width() and sy <= y <= sy + sf.winfo_height():
-                        sf._parent_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                        sf._parent_canvas.yview_scroll(int(-1 * (event.delta / 40)), "units")
                         return
                 except Exception:
                     pass
@@ -912,6 +1014,11 @@ class S4_Images(Base):
 
         self._set_col_weights(cols)
         self._grid.bind("<Configure>", self._on_resize)
+        try:
+            self._grid._scrollable_frame.bind("<Configure>", self._update_scrollregion)
+        except Exception:
+            pass
+        self._grid.after(50, self._update_scrollregion)
         self._stlbl.configure(
             text=f"{len(items)}/{len(self.app.pool)} thumbnails ready. "
                  "Select a line (left), then click an image.")
@@ -922,6 +1029,14 @@ class S4_Images(Base):
             for c in range(cols):
                 inner.columnconfigure(c, weight=1)
         except AttributeError:
+            pass
+
+    def _update_scrollregion(self, *_):
+        try:
+            self._grid.update_idletasks()
+            c = self._grid._parent_canvas
+            c.configure(scrollregion=c.bbox("all"))
+        except Exception:
             pass
 
     def _on_resize(self, event=None):
@@ -935,6 +1050,7 @@ class S4_Images(Base):
             r, c = divmod(idx, cols)
             cell.grid(row=r, column=c, padx=4, pady=4, sticky="nsew")
         self._set_col_weights(cols)
+        self._grid.after(20, self._update_scrollregion)
 
     def _sel_line(self, lid: str):
         self._sel = lid
@@ -1243,6 +1359,9 @@ class S7_Upload(Base):
         ch_bar.pack(fill="x", padx=60, pady=(0, 6))
         ch_inner = ctk.CTkFrame(ch_bar, fg_color="transparent")
         ch_inner.pack(fill="x", padx=14, pady=8)
+        self._s7_avatar_lbl = ctk.CTkLabel(ch_inner, text="", width=36, height=36)
+        self._s7_avatar_lbl.pack(side="left", padx=(0, 8))
+        self._s7_avatar_img = None
         ctk.CTkLabel(ch_inner, text="Channel:", font=("Arial", 12),
                      text_color="#888888").pack(side="left")
         ctk.CTkLabel(ch_inner, text=f"  {ch_name}", font=("Arial", 13, "bold"),
@@ -1268,15 +1387,52 @@ class S7_Upload(Base):
                            command=self._on_sched_change).pack(side="left")
 
         row_later = ctk.CTkFrame(sframe, fg_color="transparent")
-        row_later.pack(fill="x", padx=14, pady=(0, 10))
+        row_later.pack(fill="x", padx=14, pady=(0, 2))
         ctk.CTkRadioButton(row_later, text="Schedule:",
                            variable=self._sched_var, value="later",
                            command=self._on_sched_change).pack(side="left", padx=(0, 10))
-        self._date_entry = ctk.CTkEntry(row_later, placeholder_text="2026-08-01  14:00",
-                                        width=175, font=("Arial", 12), state="disabled")
-        self._date_entry.pack(side="left")
-        ctk.CTkLabel(row_later, text="UTC", font=("Arial", 11),
-                     text_color="#555577").pack(side="left", padx=6)
+
+        # Date + time pickers (enabled only when "later" selected)
+        row_pick = ctk.CTkFrame(sframe, fg_color="transparent")
+        row_pick.pack(fill="x", padx=36, pady=(0, 4))
+
+        self._date_entry = _DateEntry(row_pick, width=12, date_pattern="dd/MM/yyyy",
+                                      background="#1a1a2e", foreground="white",
+                                      borderwidth=2, state="disabled")
+        self._date_entry.pack(side="left", padx=(0, 8))
+        self._date_entry.bind("<<DateEntrySelected>>", self._update_preview)
+
+        ctk.CTkLabel(row_pick, text="at", font=("Arial", 11),
+                     text_color="#666688").pack(side="left", padx=(0, 6))
+
+        self._hour_var = ctk.StringVar(value="13")
+        self._hour_menu = ctk.CTkOptionMenu(
+            row_pick, values=[f"{h:02d}" for h in range(0, 24)],
+            variable=self._hour_var, width=72, state="disabled",
+            command=self._update_preview)
+        self._hour_menu.pack(side="left")
+
+        ctk.CTkLabel(row_pick, text=":", font=("Arial", 13, "bold"),
+                     text_color="#888888").pack(side="left", padx=2)
+
+        self._min_var = ctk.StringVar(value="00")
+        self._min_menu = ctk.CTkOptionMenu(
+            row_pick, values=["00", "15", "30", "45"],
+            variable=self._min_var, width=72, state="disabled",
+            command=self._update_preview)
+        self._min_menu.pack(side="left", padx=(0, 14))
+
+        ctk.CTkLabel(row_pick, text="WIB", font=("Arial", 11),
+                     text_color="#555577").pack(side="left", padx=(0, 12))
+
+        ctk.CTkButton(row_pick, text="⚡ Tomorrow 1 PM", width=148, height=28,
+                      font=("Arial", 11), fg_color="#1a1a3a",
+                      command=self._quick_pick).pack(side="left")
+
+        self._preview_lbl = ctk.CTkLabel(sframe, text="",
+                                          font=("Arial", 11, "italic"),
+                                          text_color="#8888bb")
+        self._preview_lbl.pack(padx=36, pady=(0, 10), anchor="w")
 
         # ── Upload button ─────────────────────────────────────────────────────
         self._btn = ctk.CTkButton(p, text="Upload Now", width=220, height=44,
@@ -1300,11 +1456,50 @@ class S7_Upload(Base):
 
     def _on_sched_change(self):
         later = self._sched_var.get() == "later"
-        self._date_entry.configure(state="normal" if later else "disabled")
+        state = "normal" if later else "disabled"
+        self._date_entry.configure(state=state)
+        self._hour_menu.configure(state=state)
+        self._min_menu.configure(state=state)
         self._btn.configure(text="Schedule Upload" if later else "Upload Now")
+        self._update_preview()
+
+    def _update_preview(self, *_):
+        if self._sched_var.get() != "later":
+            self._preview_lbl.configure(text="")
+            return
+        try:
+            utc_str = self._local_to_utc_str()
+            utc_dt  = datetime.strptime(utc_str, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+            loc_dt  = utc_dt.astimezone(_WIB)
+            h12     = loc_dt.hour % 12 or 12
+            ampm    = "AM" if loc_dt.hour < 12 else "PM"
+            self._preview_lbl.configure(
+                text=f"Publishes: {loc_dt.strftime('%a, %b %d')} at {h12}:{loc_dt.minute:02d} {ampm} WIB"
+                     f"  ({utc_dt.strftime('%H:%M UTC')})"
+            )
+        except Exception:
+            self._preview_lbl.configure(text="")
+
+    def _local_to_utc_str(self) -> str:
+        d   = self._date_entry.get_date()          # datetime.date from DateEntry
+        h   = int(self._hour_var.get())
+        m   = int(self._min_var.get())
+        loc = datetime(d.year, d.month, d.day, h, m, tzinfo=_WIB)
+        return loc.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+    def _quick_pick(self):
+        tomorrow = (datetime.now(tz=_WIB) + timedelta(days=1)).date()
+        self._date_entry.set_date(tomorrow)
+        self._hour_var.set("13")
+        self._min_var.set("00")
+        if self._sched_var.get() != "later":
+            self._sched_var.set("later")
+            self._on_sched_change()
+        else:
+            self._update_preview()
 
     def _fetch_ch_info(self, ch_key: str):
-        """Query upload.py --info to get subscriber count. Silent on failure."""
+        """Query upload.py --info to get channel stats, avatar, email. Silent on failure."""
         try:
             r = subprocess.run(
                 [sys.executable, "upload.py", "--info", "--channel", ch_key],
@@ -1313,14 +1508,31 @@ class S7_Upload(Base):
                 env={**os.environ, "PYTHONIOENCODING": "utf-8"},
                 timeout=30, creationflags=_CNW,
             )
+            thumb_url = stat = ""
             for line in r.stdout.splitlines():
                 if line.startswith("CHANNEL:"):
-                    # "CHANNEL: FaunaWorks | 1234 subscribers"
                     parts = line[len("CHANNEL:"):].strip().split("|")
-                    stat  = parts[1].strip() if len(parts) > 1 else ""
-                    if stat:
-                        self.after(0, lambda s=stat:
-                                   self._ch_stat_lbl.configure(text=f"— {s}"))
+                    stat = parts[1].strip() if len(parts) > 1 else ""
+                elif line.startswith("THUMBNAIL:"):
+                    thumb_url = line[len("THUMBNAIL:"):].strip()
+            ctk_img = None
+            if thumb_url:
+                try:
+                    img = Image.open(io.BytesIO(fetch_bytes(thumb_url))).convert("RGBA")
+                    img = img.resize((36, 36), Image.LANCZOS)
+                    ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(36, 36))
+                except Exception:
+                    pass
+            def update(s=stat, ci=ctk_img):
+                try:
+                    if s:
+                        self._ch_stat_lbl.configure(text=f"— {s}")
+                    if ci:
+                        self._s7_avatar_img = ci
+                        self._s7_avatar_lbl.configure(image=ci, text="")
+                except Exception:
+                    pass
+            self.after(0, update)
         except Exception:
             pass
 
@@ -1333,10 +1545,10 @@ class S7_Upload(Base):
     def _upload(self):
         publish_at = None
         if self._sched_var.get() == "later":
-            publish_at = self._date_entry.get().strip()
-            if not publish_at:
-                tkinter.messagebox.showerror("Schedule Error",
-                                             "Enter a date/time (YYYY-MM-DD HH:MM UTC).")
+            try:
+                publish_at = self._local_to_utc_str()
+            except Exception as e:
+                tkinter.messagebox.showerror("Schedule Error", str(e))
                 return
 
         ch_key = getattr(self.app, "channel", next(iter(_load_channels())))

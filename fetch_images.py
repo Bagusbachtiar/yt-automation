@@ -384,12 +384,18 @@ def pexels_video_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SO
     try:
         with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as resp:
             data = json.loads(resp.read())
-        terms = require_terms or []
+        incl = require_terms or []
+        excl = exclude_terms or frozenset()
 
         def _parse(videos):
             results = []
             for v in videos:
                 thumb = v.get("image", "")
+                # Thumbnail filename has descriptive tags (e.g. "red-panda-wildlife-19477927.jpeg")
+                # Page URL slug often has only photographer name — check both for terms
+                thumb_name = thumb.split("/")[-1].split("?")[0].lower()
+                page_url   = v.get("url", "").lower()
+                text       = page_url + " " + thumb_name
                 files = v.get("video_files", [])
                 portrait = [f for f in files if f.get("width", 1) < f.get("height", 1)]
                 candidates = portrait or files
@@ -398,12 +404,15 @@ def pexels_video_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SO
                 best = max(candidates, key=lambda f: f.get("width", 0) * f.get("height", 0))
                 url = best.get("link", "")
                 if url:
-                    results.append({"url": url, "thumb": thumb, "_page_url": v.get("url", "")})
+                    results.append({"url": url, "thumb": thumb, "_text": text})
             return results
 
         all_parsed = _parse(data.get("videos", []))
-        matched = [r for r in all_parsed
-                   if not terms or all(t in r.get("_page_url", "").lower() for t in terms)][:limit]
+        matched = [
+            r for r in all_parsed
+            if (not incl or all(t in r["_text"] for t in incl))
+            and (not excl or not any(e in r["_text"] for e in excl))
+        ][:limit]
         return [{"url": r["url"], "thumb": r["thumb"]} for r in matched]
     except urllib.error.HTTPError as e:
         print(f"    [Pexels Video] HTTP {e.code}: {e.reason}")

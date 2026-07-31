@@ -94,10 +94,12 @@ def get_channel_info(youtube) -> dict:
     if not items:
         return {}
     ch = items[0]
+    thumbs = ch["snippet"].get("thumbnails", {})
     return {
-        "id":   ch["id"],
-        "name": ch["snippet"]["title"],
-        "subs": ch["statistics"].get("subscriberCount", "?"),
+        "id":        ch["id"],
+        "name":      ch["snippet"]["title"],
+        "subs":      ch["statistics"].get("subscriberCount", "?"),
+        "thumbnail": (thumbs.get("medium") or thumbs.get("default") or {}).get("url", ""),
     }
 
 
@@ -179,6 +181,8 @@ def main():
 
     if info:
         print(f"CHANNEL: {info['name']} | {info['subs']} subscribers")
+        if info.get("thumbnail"):
+            print(f"THUMBNAIL: {info['thumbnail']}")
 
     if args.info:
         return
