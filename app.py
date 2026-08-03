@@ -32,7 +32,7 @@ _SSL = ssl.create_default_context()
 _SSL.check_hostname = False
 _SSL.verify_mode    = ssl.CERT_NONE
 
-SRC_ORDER = ["wiki_infobox","wikipedia","pexels","pixabay","inaturalist","gbif","pexels_video","commons","flickr","wiki_keyword"]
+SRC_ORDER = ["pexels_video","wiki_infobox","wikipedia","pexels","pixabay","inaturalist","gbif","commons","flickr","wiki_keyword"]
 _VID      = {"pexels_video"}
 MAX_POOL  = 30
 TW, TH    = 160, 220    # thumbnail display size (portrait)
@@ -225,6 +225,7 @@ def pool_from(candidates: dict) -> list:
                     seen.add(url); pool.append((src, url, thumb))
                     if len(pool) >= MAX_POOL: break
 
+    pool.sort(key=lambda x: 0 if x[0] in _VID else 1)
     return pool
 
 
@@ -657,6 +658,47 @@ class S1_Animal(Base):
 
         def run():
             try:
+                _status("Checking image/video coverage…")
+                from coverage_check import check_coverage
+                cov   = check_coverage(a)
+                tier  = cov["tier"]
+                inat  = cov["inat"]
+                video = cov.get("video", 0)
+                # Cache tier dot for queue display
+                tiers = _load_tiers()
+                tiers[a] = tier
+                _save_tiers(tiers)
+
+                thin_photo = tier != "green"
+                thin_video = cov.get("video_tier", "red") != "green"
+                if thin_photo or thin_video:
+                    photo_color = "#ff5544" if tier == "red" else "#ffee44"
+                    color       = photo_color if thin_photo else "#aaaaff"
+                    photo_line  = f"  Photos : {inat:,} iNat obs  (tier: {tier})"
+                    video_line  = f"  Video  : {video:,} Pexels clips{'  ← thin' if thin_video else ''}"
+                    issues = []
+                    if thin_photo: issues.append("thin photo coverage = fewer image candidates")
+                    if thin_video: issues.append("thin video coverage = mostly static images in final video")
+                    msg = (
+                        f"Coverage for '{a}':\n{photo_line}\n{video_line}\n\n"
+                        + "\n".join(issues)
+                        + "\n\nProceed with script generation anyway?"
+                    )
+                    proceed = [None]
+                    ev = threading.Event()
+                    def _ask(msg=msg):
+                        proceed[0] = tkinter.messagebox.askyesno("Coverage Warning", msg)
+                        ev.set()
+                    self.after(0, _ask)
+                    ev.wait()
+                    if not proceed[0]:
+                        self.after(0, lambda c=color, t=tier, v=video: (
+                            self._lbl.configure(
+                                text=f"Coverage: {t} photo / {v} video — cancelled", text_color=c),
+                            self._btn.configure(state="normal", text="Generate Titles →"),
+                        ))
+                        return
+
                 self.app.titles = gen_titles(a, status_cb=_status)
                 self.after(0, lambda: self.app.goto(S2_Titles))
             except Exception as e:

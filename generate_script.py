@@ -98,7 +98,17 @@ def main():
         reference += f"\n\n[GBIF Species Descriptions]\n{gbif_text[:2000]}"
 
     template = PROMPT_TEMPLATE.read_text(encoding="utf-8")
-    prompt = template.replace("{{TOPIC}}", topic).replace("{{WIKIPEDIA_TEXT}}", reference)
+    direction_hint = ""
+    if args.title:
+        direction_hint = (
+            f"\nCONTENT DIRECTION: The title for this video has already been chosen: \"{content_topic}\". "
+            f"Every line in your script MUST support and be consistent with what this title promises. "
+            f"Do not cover unrelated aspects of this animal — stay on the specific angle this title sets up."
+        )
+    prompt = (template
+              .replace("{{TOPIC}}", topic)
+              .replace("{{TITLE_DIRECTION}}", direction_hint)
+              .replace("{{WIKIPEDIA_TEXT}}", reference))
 
     script = None
     for attempt in range(1, MAX_RETRIES + 1):

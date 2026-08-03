@@ -12,20 +12,44 @@ import json
 import ssl
 import urllib.request
 import urllib.parse
+from pathlib import Path
 
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE
 _UA = "yt-automation/1.0 (bagusbachtiar50@gmail.com)"
 
-GREEN_INAT  = 100   # >= this: strong wildlife photo coverage
-YELLOW_INAT = 20    # >= this: some coverage, workable
+GREEN_INAT   = 100   # >= this: strong wildlife photo coverage
+YELLOW_INAT  = 20    # >= this: some coverage, workable
+GREEN_VIDEO  = 10    # >= this: good Pexels video coverage
+YELLOW_VIDEO = 5     # >= this: workable video coverage
 
 
-def _get(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+def _load_pexels_key() -> str:
+    env = Path(__file__).parent / ".env"
+    if not env.exists():
+        return ""
+    for line in env.read_text(encoding="utf-8").splitlines():
+        if line.startswith("PEXELS_API_KEY="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def _get(url: str, extra_headers: dict | None = None) -> dict:
+    h = {"User-Agent": _UA}
+    if extra_headers:
+        h.update(extra_headers)
+    req = urllib.request.Request(url, headers=h)
     with urllib.request.urlopen(req, timeout=12, context=_SSL_CTX) as r:
         return json.loads(r.read())
+
+
+def _pexels_video_count(animal: str, api_key: str) -> int:
+    params = urllib.parse.urlencode({"query": animal, "per_page": 1})
+    return _get(
+        f"https://api.pexels.com/videos/search?{params}",
+        extra_headers={"Authorization": api_key},
+    ).get("total_results", 0)
 
 
 def _inat_count(animal: str) -> int:
@@ -62,14 +86,15 @@ def _commons_count(animal: str) -> int:
 
 def check_coverage(animal: str) -> dict:
     """
-    Query iNaturalist, GBIF, and Commons for photo coverage of an animal.
-    Returns {"animal", "inat", "gbif", "commons", "tier"}.
-    Tier is based on iNaturalist count (most reliable wildlife indicator):
+    Query iNaturalist, GBIF, Commons, and Pexels Video for coverage of an animal.
+    Returns {"animal", "inat", "gbif", "commons", "video", "tier"}.
+    Tier (photo) based on iNaturalist count:
       green  >= 100 observations
       yellow >= 20  observations
       red    <  20  observations
+    video field = Pexels total_results (raw count, unfiltered).
     """
-    result = {"animal": animal, "inat": 0, "gbif": 0, "commons": 0}
+    result = {"animal": animal, "inat": 0, "gbif": 0, "commons": 0, "video": 0}
     try:
         result["inat"] = _inat_count(animal)
     except Exception:
@@ -83,8 +108,17 @@ def check_coverage(animal: str) -> dict:
     except Exception:
         pass
 
-    inat = result["inat"]
-    result["tier"] = "green" if inat >= GREEN_INAT else "yellow" if inat >= YELLOW_INAT else "red"
+    pexels_key = _load_pexels_key()
+    if pexels_key:
+        try:
+            result["video"] = _pexels_video_count(animal, pexels_key)
+        except Exception:
+            pass
+
+    inat  = result["inat"]
+    video = result["video"]
+    result["tier"]       = "green" if inat  >= GREEN_INAT   else "yellow" if inat  >= YELLOW_INAT  else "red"
+    result["video_tier"] = "green" if video >= GREEN_VIDEO  else "yellow" if video >= YELLOW_VIDEO else "red"
     return result
 
 
@@ -93,4 +127,5 @@ if __name__ == "__main__":
     animal = " ".join(sys.argv[1:]) or "mantis shrimp"
     print(f"Checking: {animal}")
     r = check_coverage(animal)
-    print(f"  iNat: {r['inat']:,}  GBIF: {r['gbif']:,}  Commons: {r['commons']:,}  tier: {r['tier']}")
+    print(f"  iNat: {r['inat']:,}  GBIF: {r['gbif']:,}  Commons: {r['commons']:,}  "
+          f"Pexels video: {r['video']:,}  tier: {r['tier']}")
