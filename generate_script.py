@@ -9,28 +9,119 @@ Output: script.json
 import argparse
 import json
 import re
+import ssl
 import sys
 import urllib.request
+import urllib.parse
 from pathlib import Path
 
 from wikipedia_fetch import fetch_wikipedia_text, fetch_eol_text, fetch_gbif_species_text
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma2:9b"
-PROMPT_TEMPLATE = Path("script_prompt_template.txt")
+PROMPT_TEMPLATE          = Path("script_prompt_template.txt")
+PROMPT_TEMPLATE_SCIENCE  = Path("script_prompt_template_science.txt")
 SCRIPT_JSON = Path("script.json")
 
 MAX_WIKI_CHARS = 4000
 MIN_LINES = 6
 MAX_RETRIES = 3
 
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode    = ssl.CERT_NONE
 
-def call_ollama(prompt: str) -> str:
+_SPACE_WORDS = {
+    "saturn","jupiter","mars","moon","sun","solar","galaxy","nebula","black hole",
+    "asteroid","comet","planet","orbit","nasa","space","star","cosmos","universe",
+    "exoplanet","quasar","supernova","neutron star","dark matter","dark energy",
+    "big bang","milky way","telescope","rings","aurora","meteor","pulsar",
+}
+_BOTANY_WORDS = {
+    "plant","flower","tree","seed","pollen","root","leaf","leaves","fungi","mushroom",
+    "photosynthesis","vine","moss","fern","algae","chlorophyll","carnivorous",
+    "venus","flytrap","pitcher","succulent","cactus","lichen","spore","bark","sap",
+}
+
+
+def classify_topic(topic: str) -> str:
+    """Returns 'space', 'botany', or 'general'."""
+    t = topic.lower()
+    if any(w in t for w in _SPACE_WORDS):
+        return "space"
+    if any(w in t for w in _BOTANY_WORDS):
+        return "botany"
+    return "general"
+
+
+def _strip_question(topic: str) -> str:
+    t = re.sub(r'^(why|how|what|when|where|is|does|can|do|did|will)\s+', '', topic.lower()).strip()
+    t = re.sub(r'\b(has|have|are|is|was|were|exist|gets?|makes?)\b', '', t)
+    return ' '.join(t.split())
+
+
+def fetch_nasa_grounding(topic: str) -> str:
+    """Fetch image descriptions from NASA Images API as grounding text."""
+    params = urllib.parse.urlencode({"q": _strip_question(topic), "media_type": "image", "page_size": 8})
+    req = urllib.request.Request(
+        f"https://images-api.nasa.gov/search?{params}",
+        headers={"User-Agent": "yt-automation/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15, context=_SSL_CTX) as r:
+            data = json.loads(r.read())
+        items = data.get("collection", {}).get("items", [])
+        texts = []
+        for item in items[:6]:
+            for d in item.get("data", []):
+                desc = d.get("description", "").strip()
+                title = d.get("title", "").strip()
+                if desc:
+                    texts.append(f"{title}: {desc[:500]}" if title else desc[:500])
+        return "\n\n".join(texts)
+    except Exception as e:
+        print(f"[WARN] NASA grounding fetch failed: {e}")
+        return ""
+
+
+def fetch_perenual_grounding(topic: str) -> str:
+    """Fetch plant data from Perenual API if key present in .env."""
+    env = Path(".env")
+    key = ""
+    if env.exists():
+        for line in env.read_text(encoding="utf-8").splitlines():
+            if line.startswith("PERENUAL_API_KEY="):
+                key = line.split("=", 1)[1].strip()
+    if not key:
+        return ""
+    params = urllib.parse.urlencode({"key": key, "q": topic, "page": 1})
+    req = urllib.request.Request(
+        f"https://perenual.com/api/species-list?{params}",
+        headers={"User-Agent": "yt-automation/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as r:
+            data = json.loads(r.read())
+        items = data.get("data", [])[:3]
+        texts = []
+        for item in items:
+            name = item.get("common_name", "")
+            sci  = item.get("scientific_name", [""])[0]
+            desc = item.get("description", "")
+            if desc:
+                texts.append(f"{name} ({sci}): {desc[:600]}")
+        return "\n\n".join(texts)
+    except Exception as e:
+        print(f"[WARN] Perenual fetch failed: {e}")
+        return ""
+
+
+def call_ollama(prompt: str, num_predict: int = 3500) -> str:
     payload = json.dumps({
         "model": OLLAMA_MODEL,
         "prompt": prompt,
         "stream": False,
-        "options": {"num_predict": 3500},
+        "options": {"num_predict": num_predict},
     }).encode()
     req = urllib.request.Request(
         OLLAMA_URL,
@@ -58,52 +149,77 @@ def extract_json(text: str) -> dict:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("topic", nargs="+", help="Animal name (used for Wikipedia search)")
-    parser.add_argument("--title", default=None, help="Chosen title for content direction")
+    parser.add_argument("topic", nargs="+", help="Topic (animal name or science question)")
+    parser.add_argument("--title",   default=None, help="Chosen title for content direction")
+    parser.add_argument("--channel", default="faunaworks", help="Channel key (faunaworks|science)")
     args = parser.parse_args()
-    topic = " ".join(args.topic)
+    topic         = " ".join(args.topic)
     content_topic = args.title if args.title else topic
+    channel       = args.channel
 
-    print(f"\nAnimal: {topic}")
+    print(f"\nTopic:   {topic}")
+    print(f"Channel: {channel}")
     if args.title:
-        print(f"Title:  {args.title}")
+        print(f"Title:   {args.title}")
 
-    if not PROMPT_TEMPLATE.exists():
-        sys.exit(f"[ERROR] {PROMPT_TEMPLATE} not found.")
+    is_science = channel == "science"
+    template_path = PROMPT_TEMPLATE_SCIENCE if is_science else PROMPT_TEMPLATE
+    if not template_path.exists():
+        sys.exit(f"[ERROR] {template_path} not found.")
 
+    # ── Grounding ─────────────────────────────────────────────────────────────
     print("Fetching Wikipedia article...")
     wiki_title, wiki_text = fetch_wikipedia_text(topic)
     print(f"Found: '{wiki_title}' ({len(wiki_text)} chars)")
 
-    print("Fetching EOL species data...")
-    eol_name, eol_text = fetch_eol_text(topic)
-    if eol_text:
-        print(f"EOL: '{eol_name}' ({len(eol_text)} chars)")
-    else:
-        print("EOL: no data found")
-
-    print("Fetching GBIF species descriptions...")
-    gbif_name, gbif_text = fetch_gbif_species_text(topic, wiki_title=wiki_title)
-    if gbif_text:
-        print(f"GBIF: '{gbif_name}' ({len(gbif_text)} chars)")
-    else:
-        print("GBIF: no descriptions found")
-
     reference = wiki_text[:MAX_WIKI_CHARS]
     if len(wiki_text) > MAX_WIKI_CHARS:
         reference += "\n[...truncated]"
-    if eol_text:
-        reference += f"\n\n[Encyclopedia of Life]\n{eol_text[:2000]}"
-    if gbif_text:
-        reference += f"\n\n[GBIF Species Descriptions]\n{gbif_text[:2000]}"
 
-    template = PROMPT_TEMPLATE.read_text(encoding="utf-8")
+    if is_science:
+        topic_type = classify_topic(topic)
+        print(f"Topic type: {topic_type}")
+        if topic_type == "space":
+            print("Fetching NASA image descriptions...")
+            nasa_text = fetch_nasa_grounding(topic)
+            if nasa_text:
+                print(f"NASA: {len(nasa_text)} chars")
+                reference += f"\n\n[NASA Image Archive]\n{nasa_text[:2000]}"
+            else:
+                print("NASA: no descriptions found")
+        elif topic_type == "botany":
+            print("Fetching Perenual plant data...")
+            perenual_text = fetch_perenual_grounding(topic)
+            if perenual_text:
+                print(f"Perenual: {len(perenual_text)} chars")
+                reference += f"\n\n[Perenual Plant Database]\n{perenual_text[:2000]}"
+            else:
+                print("Perenual: no data (key missing or not found)")
+    else:
+        print("Fetching EOL species data...")
+        eol_name, eol_text = fetch_eol_text(topic)
+        if eol_text:
+            print(f"EOL: '{eol_name}' ({len(eol_text)} chars)")
+            reference += f"\n\n[Encyclopedia of Life]\n{eol_text[:2000]}"
+        else:
+            print("EOL: no data found")
+
+        print("Fetching GBIF species descriptions...")
+        gbif_name, gbif_text = fetch_gbif_species_text(topic, wiki_title=wiki_title)
+        if gbif_text:
+            print(f"GBIF: '{gbif_name}' ({len(gbif_text)} chars)")
+            reference += f"\n\n[GBIF Species Descriptions]\n{gbif_text[:2000]}"
+        else:
+            print("GBIF: no descriptions found")
+
+    template = template_path.read_text(encoding="utf-8")
     direction_hint = ""
     if args.title:
+        subject_word = "topic" if is_science else "animal"
         direction_hint = (
             f"\nCONTENT DIRECTION: The title for this video has already been chosen: \"{content_topic}\". "
             f"Every line in your script MUST support and be consistent with what this title promises. "
-            f"Do not cover unrelated aspects of this animal — stay on the specific angle this title sets up."
+            f"Do not cover unrelated aspects of this {subject_word} — stay on the specific angle this title sets up."
         )
     prompt = (template
               .replace("{{TOPIC}}", topic)
@@ -115,7 +231,7 @@ def main():
         if attempt > 1:
             print(f"Retrying ({attempt}/{MAX_RETRIES})...")
         print(f"Calling Ollama ({OLLAMA_MODEL})...")
-        raw = call_ollama(prompt)
+        raw = call_ollama(prompt, num_predict=5000 if is_science else 3500)
         try:
             m = re.search(r'\{.*\}', raw, re.DOTALL)
             if not m:
@@ -145,7 +261,10 @@ def main():
         script["title"] = script["title"].replace("—", ",").replace(" ,", ",")
 
     script["wiki_title"] = wiki_title
-    script["animal"] = topic
+    if is_science:
+        script["topic"] = topic
+    else:
+        script["animal"] = topic
     SCRIPT_JSON.write_text(json.dumps(script, indent=2, ensure_ascii=False), encoding="utf-8")
 
     title = script.get("title", "(no title)")

@@ -22,11 +22,11 @@ Saltwater Crocodile
 Barn Owl
 Arctic Fox
 Giant Panda
-Polar Bear
+DONE: Polar Bear
 Octopus
 Mandarin Duck
 King Cobra
-Zebra
+DONE: Zebra
 Harpy Eagle
 Komodo Dragon
 Leopard

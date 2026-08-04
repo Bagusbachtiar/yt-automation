@@ -84,48 +84,107 @@ def _commons_count(animal: str) -> int:
     return data.get("query", {}).get("searchinfo", {}).get("totalhits", 0)
 
 
-def check_coverage(animal: str) -> dict:
-    """
-    Query iNaturalist, GBIF, Commons, and Pexels Video for coverage of an animal.
-    Returns {"animal", "inat", "gbif", "commons", "video", "tier"}.
-    Tier (photo) based on iNaturalist count:
-      green  >= 100 observations
-      yellow >= 20  observations
-      red    <  20  observations
-    video field = Pexels total_results (raw count, unfiltered).
-    """
-    result = {"animal": animal, "inat": 0, "gbif": 0, "commons": 0, "video": 0}
-    try:
-        result["inat"] = _inat_count(animal)
-    except Exception:
-        pass
-    try:
-        result["gbif"] = _gbif_count(animal)
-    except Exception:
-        pass
-    try:
-        result["commons"] = _commons_count(animal)
-    except Exception:
-        pass
+_SPACE_WORDS = {
+    "saturn","jupiter","mars","moon","sun","solar","galaxy","nebula","black hole",
+    "asteroid","comet","planet","orbit","nasa","space","star","cosmos","universe",
+    "exoplanet","quasar","supernova","neutron star","dark matter","dark energy",
+    "big bang","milky way","telescope","rings","aurora","meteor","pulsar",
+}
 
+GREEN_NASA  = 20   # >= this: good NASA image coverage
+
+
+def _strip_question(topic: str) -> str:
+    """Remove leading question words and filler verbs for cleaner API queries."""
+    import re as _re
+    t = _re.sub(r'^(why|how|what|when|where|is|does|can|do|did|will)\s+', '', topic.lower()).strip()
+    t = _re.sub(r'\b(has|have|are|is|was|were|exist|gets?|makes?)\b', '', t)
+    return ' '.join(t.split())
+
+
+def _nasa_count(topic: str) -> int:
+    """Total hits on NASA Images API (no key required)."""
+    params = urllib.parse.urlencode({"q": _strip_question(topic), "media_type": "image"})
+    data = _get(f"https://images-api.nasa.gov/search?{params}")
+    return data.get("collection", {}).get("metadata", {}).get("total_hits", 0)
+
+
+def _pexels_photo_count(topic: str, api_key: str) -> int:
+    params = urllib.parse.urlencode({"query": topic, "per_page": 1})
+    return _get(
+        f"https://api.pexels.com/v1/search?{params}",
+        extra_headers={"Authorization": api_key},
+    ).get("total_results", 0)
+
+
+def check_coverage(topic: str, channel: str = "faunaworks") -> dict:
+    """
+    Query sources appropriate for the channel and return coverage counts + tiers.
+    faunaworks: iNat + GBIF + Commons + Pexels video.
+    science:    NASA (if space topic) + Commons + Pexels photo + Pexels video.
+    """
     pexels_key = _load_pexels_key()
-    if pexels_key:
+
+    if channel == "science":
+        result = {"animal": topic, "inat": 0, "gbif": 0, "commons": 0, "video": 0, "nasa": 0}
+        is_space = any(w in topic.lower() for w in _SPACE_WORDS)
+        if is_space:
+            try:
+                result["nasa"] = _nasa_count(topic)
+            except Exception:
+                pass
         try:
-            result["video"] = _pexels_video_count(animal, pexels_key)
+            result["commons"] = _commons_count(topic)
         except Exception:
             pass
+        if pexels_key:
+            try:
+                result["video"] = _pexels_video_count(topic, pexels_key)
+            except Exception:
+                pass
+        # Photo tier: space → best of NASA or Commons; general science → Commons
+        photo_score  = max(result["nasa"], result["commons"]) if is_space else result["commons"]
+        green_photo  = GREEN_NASA if is_space else 50
+        yellow_photo = 5 if is_space else 10
+        result["tier"] = "green" if photo_score >= green_photo else "yellow" if photo_score >= yellow_photo else "red"
+    else:
+        result = {"animal": topic, "inat": 0, "gbif": 0, "commons": 0, "video": 0}
+        try:
+            result["inat"] = _inat_count(topic)
+        except Exception:
+            pass
+        try:
+            result["gbif"] = _gbif_count(topic)
+        except Exception:
+            pass
+        try:
+            result["commons"] = _commons_count(topic)
+        except Exception:
+            pass
+        if pexels_key:
+            try:
+                result["video"] = _pexels_video_count(topic, pexels_key)
+            except Exception:
+                pass
+        inat = result["inat"]
+        result["tier"] = "green" if inat >= GREEN_INAT else "yellow" if inat >= YELLOW_INAT else "red"
 
-    inat  = result["inat"]
     video = result["video"]
-    result["tier"]       = "green" if inat  >= GREEN_INAT   else "yellow" if inat  >= YELLOW_INAT  else "red"
-    result["video_tier"] = "green" if video >= GREEN_VIDEO  else "yellow" if video >= YELLOW_VIDEO else "red"
+    result["video_tier"] = "green" if video >= GREEN_VIDEO else "yellow" if video >= YELLOW_VIDEO else "red"
     return result
 
 
 if __name__ == "__main__":
     import sys
-    animal = " ".join(sys.argv[1:]) or "mantis shrimp"
-    print(f"Checking: {animal}")
-    r = check_coverage(animal)
+    args = sys.argv[1:]
+    channel = "faunaworks"
+    if "--channel" in args:
+        idx = args.index("--channel")
+        channel = args[idx + 1]
+        args = args[:idx] + args[idx + 2:]
+    topic = " ".join(args) or "mantis shrimp"
+    print(f"Checking: {topic}  (channel: {channel})")
+    r = check_coverage(topic, channel=channel)
     print(f"  iNat: {r['inat']:,}  GBIF: {r['gbif']:,}  Commons: {r['commons']:,}  "
-          f"Pexels video: {r['video']:,}  tier: {r['tier']}")
+          f"NASA: {r.get('nasa', 0):,}  Pexels video: {r['video']:,}  "
+          f"tier: {r['tier']}  video_tier: {r['video_tier']}")

@@ -447,15 +447,47 @@ def _pexels_with_fallback(query: str, api_key: str, fn, require_terms: list[str]
     return []
 
 
+def nasa_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[dict]:
+    """NASA Images API — no key required. Returns portrait-friendly images."""
+    params = urllib.parse.urlencode({"q": query, "media_type": "image", "page_size": min(limit * 4, 30)})
+    try:
+        req = urllib.request.Request(
+            f"https://images-api.nasa.gov/search?{params}",
+            headers={"User-Agent": "yt-automation/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=12, context=_SSL_CTX) as r:
+            data = json.loads(r.read())
+        results = []
+        for item in data.get("collection", {}).get("items", []):
+            links = item.get("links", [])
+            thumb = next((l["href"] for l in links if "thumb" in l.get("href", "")), None)
+            if not thumb:
+                continue
+            full = thumb.replace("~thumb.jpg", "~large.jpg") if "~thumb.jpg" in thumb else thumb
+            results.append({"url": full, "thumb": thumb})
+            if len(results) >= limit:
+                break
+        return results
+    except Exception as e:
+        print(f"    [NASA] error: {e}")
+        return []
+
+
 def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
                      flickr_key: str = "", wiki_url: str | None = None,
-                     animal: str = "", line_text: str = "") -> dict:
-    # 1-word: check that word; 2-word: require both ("sea pig" needs "sea" AND "pig");
-    # 3+-word: last word only (modifier words like "great" are too generic to require)
+                     animal: str = "", line_text: str = "",
+                     channel: str = "faunaworks") -> dict:
+    # Science topics are question-phrased ("How auroras happen") — term filtering
+    # would key on "happen", killing all results. Skip for science; query handles relevance.
+    is_science = channel == "science"
     words = animal.lower().split() if animal else []
-    if len(words) <= 2:
+    if is_science:
+        require_terms = []
+    elif len(words) <= 2:
+        # 1-word: check that word; 2-word: require both ("sea pig" needs both)
         require_terms = words
     else:
+        # 3+-word: last word only (modifiers like "great" are too generic to require)
         require_terms = [words[-1]]
 
     # Suppress food/commercial imagery (sushi, fillet, plate…) unless the keyword or
@@ -472,9 +504,10 @@ def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
         "commons":      commons_search(query),
         "pexels":       _pexels_with_fallback(query, pexels_key, pexels_search, require_terms, exclude_terms)       if pexels_key else [],
         "pixabay":      pixabay_search(query, pixabay_key, require_terms=require_terms, exclude_terms=exclude_terms) if pixabay_key else [],
-        "inaturalist":  inaturalist_search(query),
-        "gbif":         gbif_search(query),
+        "inaturalist":  [] if is_science else inaturalist_search(query),
+        "gbif":         [] if is_science else gbif_search(query),
         "pexels_video": _pexels_with_fallback(query, pexels_key, pexels_video_search, require_terms, exclude_terms) if pexels_key else [],
+        "nasa":         nasa_search(query) if is_science else [],
     }
 
 
@@ -498,6 +531,12 @@ def download(url: str, dest: Path):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    import argparse as _ap
+    _parser = _ap.ArgumentParser()
+    _parser.add_argument("--channel", default="faunaworks")
+    _args, _ = _parser.parse_known_args()
+    channel = _args.channel
+
     load_env()
     pexels_key  = os.environ.get("PEXELS_API_KEY",  "").strip()
     pixabay_key = os.environ.get("PIXABAY_API_KEY", "").strip()
@@ -540,15 +579,16 @@ def main():
             wiki_url = _best_wiki_match(keyword, wiki_pool, used_wiki)
             if wiki_url:
                 used_wiki.add(wiki_url)
-        animal = script.get("animal", "")
+        animal = script.get("animal") or script.get("topic", "")
         print(f"  Line {lid:2d}: {keyword}")
         c = fetch_candidates(keyword, pexels_key, pixabay_key, flickr_key=flickr_key,
-                             wiki_url=wiki_url, animal=animal, line_text=line.get("text", ""))
+                             wiki_url=wiki_url, animal=animal, line_text=line.get("text", ""),
+                             channel=channel)
         if not c["wiki_keyword"] and fallback_keyword and fallback_keyword != keyword:
             print(f"    [fallback] no wiki match — trying: {fallback_keyword}")
             c["wiki_keyword"] = wikipedia_keyword_search(fallback_keyword)
         total = sum(len(v) for v in c.values())
-        print(f"    wiki:{len(c['wikipedia'])}  wiki_kw:{len(c['wiki_keyword'])}  flickr:{len(c['flickr'])}  commons:{len(c['commons'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  inat:{len(c['inaturalist'])}  gbif:{len(c['gbif'])}  pexels_vid:{len(c['pexels_video'])}  total:{total}")
+        print(f"    wiki:{len(c['wikipedia'])}  wiki_kw:{len(c['wiki_keyword'])}  flickr:{len(c['flickr'])}  commons:{len(c['commons'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  inat:{len(c['inaturalist'])}  gbif:{len(c['gbif'])}  pexels_vid:{len(c['pexels_video'])}  nasa:{len(c['nasa'])}  total:{total}")
         all_candidates[str(lid)] = {
             "text":    line["text"],
             "keyword": keyword,

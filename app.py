@@ -32,7 +32,11 @@ _SSL = ssl.create_default_context()
 _SSL.check_hostname = False
 _SSL.verify_mode    = ssl.CERT_NONE
 
-SRC_ORDER = ["pexels_video","wiki_infobox","wikipedia","pexels","pixabay","inaturalist","gbif","commons","flickr","wiki_keyword"]
+_SRC_ORDER = {
+    "faunaworks": ["pexels_video","wiki_infobox","wikipedia","pexels","pixabay","inaturalist","gbif","commons","flickr","wiki_keyword"],
+    "science":    ["pexels_video","nasa","wiki_infobox","wikipedia","commons","pexels","pixabay","wiki_keyword"],
+}
+SRC_ORDER = _SRC_ORDER["faunaworks"]   # default for any legacy callers
 _VID      = {"pexels_video"}
 MAX_POOL  = 30
 TW, TH    = 160, 220    # thumbnail display size (portrait)
@@ -53,22 +57,25 @@ VOICES = [
 ]
 PREVIEW_TEXT  = "This creature has one of the most surprising abilities in the entire animal kingdom."
 SAMPLES_DIR   = _HERE / "voice_samples"
-TOPICS_FILE   = _HERE / "topics.txt"
-TIERS_FILE    = _HERE / "topics_tiers.json"
+def _topics_path(channel: str = "faunaworks") -> Path:
+    return _HERE / f"topics_{channel}.txt"
+
+def _tiers_path(channel: str = "faunaworks") -> Path:
+    return _HERE / f"topics_tiers_{channel}.json"
 
 
-def _load_tiers() -> dict:
-    """Returns {animal_name: tier_str} — coverage tiers from last Discover run."""
-    if not TIERS_FILE.exists():
+def _load_tiers(channel: str = "faunaworks") -> dict:
+    p = _tiers_path(channel)
+    if not p.exists():
         return {}
     try:
-        return json.loads(TIERS_FILE.read_text(encoding="utf-8"))
+        return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
 
-def _save_tiers(tiers: dict):
-    TIERS_FILE.write_text(json.dumps(tiers, indent=2, ensure_ascii=False), encoding="utf-8")
+def _save_tiers(tiers: dict, channel: str = "faunaworks"):
+    _tiers_path(channel).write_text(json.dumps(tiers, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _load_channels() -> dict:
@@ -82,12 +89,13 @@ def _load_channels() -> dict:
     return {"faunaworks": "FaunaWorks"}
 
 
-def _load_topics() -> list[tuple[str, bool]]:
+def _load_topics(channel: str = "faunaworks") -> list[tuple[str, bool]]:
     """Returns [(text, is_done), ...] — skips blank lines and comments."""
-    if not TOPICS_FILE.exists():
+    p = _topics_path(channel)
+    if not p.exists():
         return []
     result = []
-    for line in TOPICS_FILE.read_text(encoding="utf-8").splitlines():
+    for line in p.read_text(encoding="utf-8").splitlines():
         s = line.strip()
         if not s or s.startswith("#"):
             continue
@@ -98,11 +106,11 @@ def _load_topics() -> list[tuple[str, bool]]:
     return result
 
 
-def _save_topics(topics: list[tuple[str, bool]]):
-    lines = ["# FaunaWorks topic queue — managed by the app"]
+def _save_topics(topics: list[tuple[str, bool]], channel: str = "faunaworks"):
+    lines = [f"# {channel} topic queue — managed by the app"]
     for text, done in topics:
         lines.append(f"DONE: {text}" if done else text)
-    TOPICS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _topics_path(channel).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -116,7 +124,7 @@ def _ollama(prompt: str, tokens: int = 600) -> str:
         return json.loads(r.read()).get("response", "")
 
 
-def gen_titles(animal: str, status_cb=None) -> list:
+def gen_titles(animal: str, status_cb=None, channel: str = "faunaworks") -> list:
     from wikipedia_fetch import fetch_wikipedia_text
     if status_cb:
         status_cb("Fetching Wikipedia…")
@@ -133,32 +141,75 @@ def gen_titles(animal: str, status_cb=None) -> list:
     )
     if status_cb:
         status_cb("Generating titles…")
-    raw = _ollama(
-        f"You are a YouTube Shorts title writer for FaunaWorks, an animal facts channel.\n"
-        f"Animal: {animal}\n"
-        f"Generate 5 title options. Each title MUST be based on a REAL, verifiable biological trait, "
-        f"ability, behavior, or ecological role this animal actually has.\n\n"
-        f"STRICT RULES:\n"
-        f"- Ground every title in a real fact from the Wikipedia text below\n"
-        f"- NO invented scenarios: no pranks, parties, battles, drama, or human-framing\n"
-        f"- NO vague filler: no Amazing, Incredible, Shocking, Exposed\n"
-        f"- Curiosity-gap format — tease something real. Proven patterns:\n"
-        f"  'This [Animal] Can [Real Ability]'\n"
-        f"  'The [Animal] That [Real Behavior]'\n"
-        f"  'Why [Animal] [Surprising Fact]'\n"
-        f"  'How [Animal] [Protects/Saves/Feeds/Controls] [Ecosystem/Plants/Species]'\n"
-        f"  'Why [Ecosystem/Garden/Ocean] Needs [Animal]'\n"
-        f"- REQUIRED: at least 2 of the 5 titles must focus on the animal's ecological role or "
-        f"benefit (pest control, pollination, food chain, seed dispersal, soil health, etc.)\n"
-        f"- 6-10 words max. No dashes, hyphens, colons, or em dashes\n"
-        f"- Each title must cover a different angle{grounding}\n\n"
-        f'Return ONLY a JSON array: ["Title 1","Title 2","Title 3","Title 4","Title 5"]', 600
-    )
+
+    if channel == "science":
+        raw = _ollama(
+            f"You are a YouTube Shorts title writer for CuriosityLab, a general science channel.\n"
+            f"Topic: {animal}\n"
+            f"Generate 5 title options. Each title MUST be based on a REAL, verifiable scientific fact.\n\n"
+            f"STRICT RULES:\n"
+            f"- Ground every title in a real fact from the Wikipedia text below\n"
+            f"- NO pseudoscience, no invented scenarios, no clickbait exaggeration\n"
+            f"- NO vague filler: no Amazing, Incredible, Shocking, Exposed\n"
+            f"- Curiosity-gap format — tease something counterintuitive or surprising that's real:\n"
+            f"  'Why [Thing] [Surprising Behavior]'\n"
+            f"  'This [Object/Force/Element] Can [Surprising Real Fact]'\n"
+            f"  'The [Phenomenon] That [Does Something Unexpected]'\n"
+            f"  'How [Thing] Actually [Works/Happens]'\n"
+            f"  'What Happens When [Surprising Condition]'\n"
+            f"- 6-10 words max. No dashes, hyphens, colons, or em dashes\n"
+            f"- Each title must cover a different angle{grounding}\n\n"
+            f'Return ONLY a JSON array: ["Title 1","Title 2","Title 3","Title 4","Title 5"]', 600
+        )
+    else:
+        raw = _ollama(
+            f"You are a YouTube Shorts title writer for FaunaWorks, an animal facts channel.\n"
+            f"Animal: {animal}\n"
+            f"Generate 5 title options. Each title MUST be based on a REAL, verifiable biological trait, "
+            f"ability, behavior, or ecological role this animal actually has.\n\n"
+            f"STRICT RULES:\n"
+            f"- Ground every title in a real fact from the Wikipedia text below\n"
+            f"- NO invented scenarios: no pranks, parties, battles, drama, or human-framing\n"
+            f"- NO vague filler: no Amazing, Incredible, Shocking, Exposed\n"
+            f"- Curiosity-gap format — tease something real. Proven patterns:\n"
+            f"  'This [Animal] Can [Real Ability]'\n"
+            f"  'The [Animal] That [Real Behavior]'\n"
+            f"  'Why [Animal] [Surprising Fact]'\n"
+            f"  'How [Animal] [Protects/Saves/Feeds/Controls] [Ecosystem/Plants/Species]'\n"
+            f"  'Why [Ecosystem/Garden/Ocean] Needs [Animal]'\n"
+            f"- REQUIRED: at least 2 of the 5 titles must focus on the animal's ecological role or "
+            f"benefit (pest control, pollination, food chain, seed dispersal, soil health, etc.)\n"
+            f"- 6-10 words max. No dashes, hyphens, colons, or em dashes\n"
+            f"- Each title must cover a different angle{grounding}\n\n"
+            f'Return ONLY a JSON array: ["Title 1","Title 2","Title 3","Title 4","Title 5"]', 600
+        )
     m = re.search(r'\[.*?\]', raw, re.DOTALL)
     if not m:
         raise ValueError(f"No array in response: {raw[:150]}")
     cleaned = re.sub(r',(\s*[\]}])', r'\1', m.group())
     return [t for t in json.loads(cleaned) if isinstance(t, str)][:5]
+
+
+def brainstorm_topics(theme: str, count: int = 25) -> list[str]:
+    raw = _ollama(
+        f"Generate a list of {count} specific, engaging science video topics that fit this theme: {theme}\n\n"
+        f"RULES:\n"
+        f"- Return ONLY a JSON array of topic phrases, no explanation\n"
+        f"- Each topic must be a specific question or phenomenon, not a broad subject\n"
+        f"- Good examples: 'why ice floats', 'how black holes form', 'why Saturn has rings', 'how plants eat insects'\n"
+        f"- Topics should be visual, surprising, or counterintuitive\n"
+        f"- Mix space, physics, chemistry, and botany topics\n"
+        f"- No pseudoscience, no made-up phenomena\n"
+        f"Return ONLY a valid JSON array of strings.", 800
+    )
+    m = re.search(r'\[.*?\]', raw, re.DOTALL)
+    if not m:
+        return []
+    try:
+        cleaned = re.sub(r',(\s*[\]}])', r'\1', m.group())
+        return [t for t in json.loads(cleaned) if isinstance(t, str)][:count]
+    except Exception:
+        return []
 
 
 def brainstorm_animals(theme: str, count: int = 25) -> list[str]:
@@ -184,15 +235,15 @@ def brainstorm_animals(theme: str, count: int = 25) -> list[str]:
 
 def _extract(src: str, entry) -> tuple:
     """Return (url, thumb) from a candidates entry."""
-    if src in _VID:
-        url   = entry.get("url", "") if isinstance(entry, dict) else entry
-        thumb = entry.get("thumb")   if isinstance(entry, dict) else None
+    if isinstance(entry, dict):
+        url   = entry.get("url", "")
+        thumb = entry.get("thumb")
     else:
         url, thumb = entry, None
     return url, thumb
 
 
-def pool_from(candidates: dict) -> list:
+def pool_from(candidates: dict, src_order: list | None = None) -> list:
     seen, pool = set(), []
 
     def _take_one(data: dict, sources: list) -> bool:
@@ -205,17 +256,18 @@ def pool_from(candidates: dict) -> list:
                     seen.add(url); pool.append((src, url, thumb)); return True
         return False
 
-    # Phase 1 — per line: 1 wiki photo + 1 biodiversity photo + 1 video + 1 stock photo
-    # wiki_keyword excluded from Phase 1: for animals it finds wrong Wikipedia articles
-    # (airline "American Eagle", military jets "F-15 Eagle", NSFW "spread eagle")
+    _order = src_order or SRC_ORDER
+
+    # Phase 1 — per line: 1 nasa/wiki photo + 1 biodiversity photo + 1 video + 1 stock photo
+    # wiki_keyword excluded from Phase 1 (returns wrong Wikipedia articles for animal names)
     for data in candidates.values():
-        _take_one(data, ["wiki_infobox", "wikipedia"])
+        _take_one(data, ["nasa", "wiki_infobox", "wikipedia"])
         _take_one(data, ["inaturalist", "gbif"])
         _take_one(data, ["pexels_video"])
         _take_one(data, ["pexels", "pixabay"])
 
     # Phase 2 — fill remaining slots up to MAX_POOL
-    for src in SRC_ORDER:
+    for src in _order:
         if len(pool) >= MAX_POOL: break
         for data in candidates.values():
             for entry in data["sources"].get(src, []):
@@ -224,6 +276,7 @@ def pool_from(candidates: dict) -> list:
                 if url and url not in seen:
                     seen.add(url); pool.append((src, url, thumb))
                     if len(pool) >= MAX_POOL: break
+            if len(pool) >= MAX_POOL: break
 
     pool.sort(key=lambda x: 0 if x[0] in _VID else 1)
     return pool
@@ -309,8 +362,9 @@ class App(ctk.CTk):
 
         hdr = ctk.CTkFrame(self, height=50, fg_color="#0e0e20")
         hdr.pack(fill="x")
-        ctk.CTkLabel(hdr, text="FaunaWorks Pipeline",
-                     font=("Arial", 16, "bold"), text_color="white").pack(side="left", padx=16)
+        self._hdrlbl = ctk.CTkLabel(hdr, text="FaunaWorks Pipeline",
+                                    font=("Arial", 16, "bold"), text_color="white")
+        self._hdrlbl.pack(side="left", padx=16)
         self._steplbl = ctk.CTkLabel(hdr, text="", font=("Arial", 12), text_color="#888888")
         self._steplbl.pack(side="right", padx=16)
 
@@ -395,9 +449,11 @@ class S1_Animal(Base):
         ch_key = next((k for k, v in channels.items() if v == cur_ch_name), self.app.channel)
         threading.Thread(target=self._fetch_s1_ch_info, args=(ch_key,), daemon=True).start()
 
-        _h1(p, "What animal?")
-        _sub(p, "Type any animal — AI finds the best angle")
-        self._e = ctk.CTkEntry(p, placeholder_text="e.g. elephant",
+        _is_sci = getattr(self.app, "channel", "faunaworks") == "science"
+        _h1(p, "What topic?" if _is_sci else "What animal?")
+        _sub(p, "Type any science topic — AI finds the best angle" if _is_sci
+             else "Type any animal — AI finds the best angle")
+        self._e = ctk.CTkEntry(p, placeholder_text="e.g. why ice floats" if _is_sci else "e.g. elephant",
                                width=320, font=("Arial", 15), height=42)
         self._e.pack(pady=(16, 8))
         if getattr(self.app, "animal", ""):
@@ -450,7 +506,8 @@ class S1_Animal(Base):
 
         add_row = ctk.CTkFrame(outer, fg_color="transparent")
         add_row.pack(fill="x", padx=8, pady=(2, 2))
-        self._qadd = ctk.CTkEntry(add_row, placeholder_text="Add animal…",
+        _qadd_ph = "Add topic…" if getattr(self.app, "channel", "faunaworks") == "science" else "Add animal…"
+        self._qadd = ctk.CTkEntry(add_row, placeholder_text=_qadd_ph,
                                   height=28, font=("Arial", 12))
         self._qadd.pack(side="left", fill="x", expand=True, padx=(0, 6))
         self._qadd.bind("<Return>", lambda _: self._add_topic())
@@ -461,7 +518,9 @@ class S1_Animal(Base):
 
         disc_row = ctk.CTkFrame(outer, fg_color="transparent")
         disc_row.pack(fill="x", padx=8, pady=(4, 2))
-        self._disc_entry = ctk.CTkEntry(disc_row, placeholder_text="Discover theme… e.g. ocean creatures",
+        _disc_ph = "Discover theme… e.g. quantum physics" if getattr(self.app, "channel", "faunaworks") == "science" \
+                   else "Discover theme… e.g. ocean creatures"
+        self._disc_entry = ctk.CTkEntry(disc_row, placeholder_text=_disc_ph,
                                         height=28, font=("Arial", 12))
         self._disc_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
         self._disc_entry.bind("<Return>", lambda _: self._discover_topics())
@@ -477,8 +536,8 @@ class S1_Animal(Base):
     def _refresh_queue(self):
         for w in self._qframe.winfo_children():
             w.destroy()
-        topics = _load_topics()
-        tiers  = _load_tiers()
+        topics = _load_topics(self.app.channel)
+        tiers  = _load_tiers(self.app.channel)
         pending = [(i, t) for i, (t, done) in enumerate(topics) if not done]
         if not pending:
             ctk.CTkLabel(self._qframe, text="No pending topics",
@@ -511,20 +570,20 @@ class S1_Animal(Base):
         text = self._qadd.get().strip()
         if not text:
             return
-        topics = _load_topics()
+        topics = _load_topics(self.app.channel)
         if any(t == text for t, _ in topics):
             self._qadd.delete(0, "end")
             return
         topics.append((text, False))
-        _save_topics(topics)
+        _save_topics(topics, self.app.channel)
         self._qadd.delete(0, "end")
         self._refresh_queue()
 
     def _delete_topic(self, idx: int):
-        topics = _load_topics()
+        topics = _load_topics(self.app.channel)
         if 0 <= idx < len(topics):
             topics.pop(idx)
-            _save_topics(topics)
+            _save_topics(topics, self.app.channel)
         self._refresh_queue()
 
     def _prepare_samples(self):
@@ -573,9 +632,10 @@ class S1_Animal(Base):
         for k, v in channels.items():
             if v == display_name:
                 self.app.channel = k
-                self._ch_email_lbl.configure(text="fetching account…", text_color="#8888aa")
-                self._ch_avatar_lbl.configure(image=None, text="○", text_color="#7777aa")
-                threading.Thread(target=self._fetch_s1_ch_info, args=(k,), daemon=True).start()
+                pipeline_title = f"{display_name} Pipeline"
+                self.app.title(pipeline_title)
+                self.app._hdrlbl.configure(text=pipeline_title)
+                self.app.goto(S1_Animal)   # rebuild so labels/placeholders match channel
                 return
 
     def _fetch_s1_ch_info(self, ch_key: str):
@@ -660,14 +720,14 @@ class S1_Animal(Base):
             try:
                 _status("Checking image/video coverage…")
                 from coverage_check import check_coverage
-                cov   = check_coverage(a)
+                cov   = check_coverage(a, channel=self.app.channel)
                 tier  = cov["tier"]
                 inat  = cov["inat"]
                 video = cov.get("video", 0)
                 # Cache tier dot for queue display
-                tiers = _load_tiers()
+                tiers = _load_tiers(self.app.channel)
                 tiers[a] = tier
-                _save_tiers(tiers)
+                _save_tiers(tiers, self.app.channel)
 
                 thin_photo = tier != "green"
                 thin_video = cov.get("video_tier", "red") != "green"
@@ -699,7 +759,7 @@ class S1_Animal(Base):
                         ))
                         return
 
-                self.app.titles = gen_titles(a, status_cb=_status)
+                self.app.titles = gen_titles(a, status_cb=_status, channel=self.app.channel)
                 self.after(0, lambda: self.app.goto(S2_Titles))
             except Exception as e:
                 self.after(0, lambda err=e: (
@@ -718,7 +778,8 @@ class S1_Animal(Base):
 
         def run():
             try:
-                animals = brainstorm_animals(theme)
+                animals = (brainstorm_topics(theme) if self.app.channel == "science"
+                           else brainstorm_animals(theme))
                 if not animals:
                     self.after(0, lambda: (
                         self._disc_lbl.configure(text="No animals returned — try rephrasing", text_color="#ff5555"),
@@ -732,8 +793,9 @@ class S1_Animal(Base):
                 results = []
                 done = [0]
                 total = len(animals)
+                ch = self.app.channel
                 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-                    futures = {ex.submit(check_coverage, a): a for a in animals}
+                    futures = {ex.submit(check_coverage, a, ch): a for a in animals}
                     for fut in concurrent.futures.as_completed(futures):
                         results.append(fut.result())
                         done[0] += 1
@@ -742,9 +804,10 @@ class S1_Animal(Base):
 
                 results.sort(key=lambda r: ({"green": 0, "yellow": 1, "red": 2}[r["tier"]], -r["inat"]))
 
-                topics = _load_topics()
+                ch = self.app.channel
+                topics = _load_topics(ch)
                 existing = {t.lower() for t, _ in topics}
-                tiers = _load_tiers()
+                tiers = _load_tiers(ch)
                 added = 0
                 for r in results:
                     if r["animal"].lower() not in existing:
@@ -752,8 +815,8 @@ class S1_Animal(Base):
                         existing.add(r["animal"].lower())
                         added += 1
                     tiers[r["animal"]] = r["tier"]
-                _save_topics(topics)
-                _save_tiers(tiers)
+                _save_topics(topics, ch)
+                _save_tiers(tiers, ch)
 
                 self.after(0, lambda a=added: (
                     self._disc_lbl.configure(text=f"Added {a} new animals to queue", text_color="#44bb66"),
@@ -813,7 +876,7 @@ class S2_Titles(Base):
 
         def run():
             try:
-                self.app.titles = gen_titles(self.app.animal)
+                self.app.titles = gen_titles(self.app.animal, channel=self.app.channel)
                 self.after(0, lambda: self.app.goto(S2_Titles))
             except Exception as e:
                 self.after(0, lambda err=e: (
@@ -836,7 +899,8 @@ class S2_Titles(Base):
         def run():
             try:
                 proc = subprocess.Popen(
-                    [sys.executable, "generate_script.py", self.app.animal, "--title", title],
+                    [sys.executable, "generate_script.py", self.app.animal,
+                     "--title", title, "--channel", self.app.channel],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, encoding="utf-8", cwd=_HERE,
                     env={**os.environ, "PYTHONIOENCODING": "utf-8"},
@@ -850,12 +914,12 @@ class S2_Titles(Base):
                 if proc.returncode != 0:
                     raise RuntimeError(f"generate_script.py exited {proc.returncode} — see log above")
                 self.app.script = json.loads(SCRIPT_JSON.read_text(encoding="utf-8"))
-                # Catch LLM returning wrong animal (e.g. cached jellyfish content for firefly input)
-                got = self.app.script.get("animal", "").strip().lower()
+                # Catch LLM returning wrong topic (uses "animal" for faunaworks, "topic" for science)
+                got = (self.app.script.get("animal") or self.app.script.get("topic", "")).strip().lower()
                 want = self.app.animal.strip().lower()
                 if got and got != want:
                     raise RuntimeError(
-                        f"Script is about '{self.app.script.get('animal')}', not '{self.app.animal}'. "
+                        f"Script is about '{got}', not '{self.app.animal}'. "
                         "Ollama returned wrong content — try generating again."
                     )
                 self.app.script["title"] = title
@@ -876,7 +940,7 @@ class S3_Script(Base):
         p = self._reset()
         sc = self.app.script
         # Guard: if script is stale or mismatched, send user back rather than silently showing wrong content
-        got = sc.get("animal", "").strip().lower()
+        got = (sc.get("animal") or sc.get("topic", "")).strip().lower()
         want = getattr(self.app, "animal", "").strip().lower()
         if not sc.get("lines") or (got and want and got != want):
             ctk.CTkLabel(p, text=f"Script mismatch (got '{got}', expected '{want}'). Go back.",
@@ -996,7 +1060,7 @@ class S4_Images(Base):
         try:
             self.after(0, lambda: self._stlbl.configure(text="Running fetch_images.py…"))
             r = subprocess.run(
-                [sys.executable, "fetch_images.py"],
+                [sys.executable, "fetch_images.py", "--channel", self.app.channel],
                 capture_output=True, text=True, encoding="utf-8", cwd=Path(__file__).parent,
                 env={**os.environ, "PYTHONIOENCODING": "utf-8"},
                 creationflags=_CNW,
@@ -1004,7 +1068,7 @@ class S4_Images(Base):
             if r.returncode != 0:
                 raise RuntimeError((r.stderr or r.stdout)[-400:])
             cands = json.loads(CANDS_JSON.read_text(encoding="utf-8"))
-            pool  = pool_from(cands)
+            pool  = pool_from(cands, _SRC_ORDER.get(self.app.channel, SRC_ORDER))
             self.app.pool = pool
 
             items = []
@@ -1628,11 +1692,11 @@ class S7_Upload(Base):
                 # Mark animal done in queue only after successful upload
                 animal = getattr(self.app, "animal", "")
                 if animal:
-                    topics = _load_topics()
+                    topics = _load_topics(self.app.channel)
                     for i, (text, is_done) in enumerate(topics):
                         if not is_done and text.lower() == animal.lower():
                             topics[i] = (text, True)
-                            _save_topics(topics)
+                            _save_topics(topics, self.app.channel)
                             break
                 done_lbl = "Scheduled ✓" if publish_at else "Uploaded ✓"
                 self.after(0, lambda: self._btn.configure(state="disabled", text=done_lbl))
