@@ -1,4 +1,4 @@
-# FaunaWorks topic queue — managed by the app
+# faunaworks topic queue — managed by the app
 Brown Bear
 White Rhinoceros
 African Elephant
@@ -35,9 +35,9 @@ Hammerhead Shark
 Emperor Penguin
 Mantis Shrimp
 Fennec Fox
-Cheetah
+DONE: Cheetah
 Whale Shark
-Hippopotamus
+DONE: Hippopotamus
 Lynx
 Gorilla
 Sloth
@@ -48,7 +48,7 @@ Cougar
 Meerkat
 Lionfish
 Tiger
-Hummingbird
+DONE: Hummingbird
 Orca
 Chameleon
 Humpback Whale
@@ -66,6 +66,6 @@ Macaw
 Chimpanzee
 Clownfish
 Shoebill
-Capybara
+DONE: Capybara
 Axolotl
 Wolverine

@@ -5,12 +5,12 @@ DONE: Why the sky is blue
 How lightning forms
 DONE: How volcanoes erupt
 Why snowflakes are symmetrical
-How black holes form
+DONE: How black holes form
 Why the moon has craters
 How coral reefs grow
 Why glass is transparent
 How earthquakes happen
 Why fire needs oxygen
-How rainbows form
-Why the ocean is salty
-How stars are born
+DONE: How rainbows form
+DONE: Why the ocean is salty
+DONE: How stars are born

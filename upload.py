@@ -103,14 +103,18 @@ def get_channel_info(youtube) -> dict:
     }
 
 
-def build_metadata(script: dict, publish_at: str | None = None) -> dict:
+def build_metadata(script: dict, publish_at: str | None = None, channel: str = "faunaworks") -> dict:
     title    = script.get("title", "FaunaWorks")
     base_desc = script.get("yt_description",
                            " ".join(l["text"] for l in script.get("lines", [])))
-    description = base_desc + (
-        "\n\n#Shorts #AnimalFacts #Wildlife #NatureFacts #FaunaWorks #Science #Animals #LearnOnYouTube"
-    )
-    tags = [t for t in script.get("yt_tags", ["animals", "wildlife", "nature", "shorts", "faunaworks"]) if t]
+    if channel == "science":
+        hashtags = "#Shorts #ScienceFacts #DidYouKnow #ScienceExplained #CuriosityLab #HowThingsWork #LearnOnYouTube"
+        default_tags = ["science facts", "did you know", "science explained", "curiositylab", "how things work", "shorts"]
+    else:
+        hashtags = "#Shorts #AnimalFacts #Wildlife #NatureFacts #FaunaWorks #Science #Animals #LearnOnYouTube"
+        default_tags = ["animals", "wildlife", "nature", "shorts", "faunaworks"]
+    description = base_desc + "\n\n" + hashtags
+    tags = [t for t in script.get("yt_tags", default_tags) if t]
 
     status: dict = {"selfDeclaredMadeForKids": False}
     if publish_at:
@@ -193,7 +197,7 @@ def main():
         sys.exit(f"[ERROR] Script not found: {args.script}")
 
     script   = json.loads(args.script.read_text(encoding="utf-8"))
-    metadata = build_metadata(script, args.publish_at)
+    metadata = build_metadata(script, args.publish_at, channel=channel)
     title    = metadata["snippet"]["title"]
     mb       = args.file.stat().st_size / 1024 / 1024
 

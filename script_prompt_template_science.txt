@@ -44,6 +44,7 @@ STRICT RULES:
    - "pressure" → social or abstract. Write "water pressure underwater" or "air pressure gauge".
    - "tension" → emotional tension. Write "surface tension water droplet" or "wire tension bridge".
    - "scale" (for magnitude/measurement) → ruler or fish scales. Write "richter scale chart" or "magnitude scale seismograph".
+   - "brain scan" / "MRI" / "X-ray" (for neuroscience/psychology lines) → resolves to hospital patient, medical procedure, clinical imagery. NEVER use for concept lines about perception, cognition, or pattern recognition. Instead show the phenomenon itself: pareidolia → "face rock cliff" or "cloud face shape"; pattern recognition → "neuron network illustration" or "optical illusion pattern"; brain function → "brain illustration colorful" or "neuron synapse close".
    - General rule: physics abstractions need concrete physical stand-ins — show the experiment, instrument, or real-world result.
 9. image_keyword must directly depict the subject of THAT specific line. Re-read each line and ask: would a photo matching this keyword make sense playing under this exact sentence? If the keyword contains any banned adjective (see rule 7), rewrite it.
 10. image_keyword_fallback: a broader, safer version of the keyword. For space: just the object name ("saturn", "black hole", "nebula"). For physics: the phenomenon ("lightning", "ice", "magnet"). Simpler is always safer — a correct image beats an empty search.

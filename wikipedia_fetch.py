@@ -102,9 +102,12 @@ def fetch_wikipedia_images(title: str, limit: int = 30) -> list[str]:
         data = json.loads(_get(f"{COMMONS_API}?{params}"))
         for page in data.get("query", {}).get("pages", {}).values():
             info = (page.get("imageinfo") or [{}])[0]
-            license_str = (info.get("extmetadata", {})
-                               .get("LicenseShortName", {})
-                               .get("value", ""))
+            try:
+                license_str = (info.get("extmetadata", {})
+                                   .get("LicenseShortName", {})
+                                   .get("value", ""))
+            except AttributeError:
+                license_str = ""
             if not is_acceptable_license(license_str):
                 continue
             img_url = info.get("thumburl") or info.get("url", "")

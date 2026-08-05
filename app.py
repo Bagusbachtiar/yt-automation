@@ -130,8 +130,22 @@ def gen_titles(animal: str, status_cb=None, channel: str = "faunaworks") -> list
         status_cb("Fetching Wikipedia…")
     wiki_snippet = ""
     try:
-        _, wiki_text = fetch_wikipedia_text(animal)
-        wiki_snippet = wiki_text[:2500]
+        wiki_title, wiki_text = fetch_wikipedia_text(animal)
+        # Validate article is actually about this topic — fuzzy search can return wrong
+        # matches (e.g. "How stars are born" → "How Angels Are Born", a crime film).
+        # Require at least one non-trivial topic word to appear in the article title.
+        _WIKI_STOP = {"what","when","where","does","have","will","been","they","this","that",
+                      "from","with","into","some","born","form","forms","formed","make","made",
+                      "happen","happens","work","works","exist","need","needs","live","lives",
+                      "grow","grows","cause","causes","found","feel","move","turn","keep","come",
+                      "came","goes","look","seem","show","take","much","more","most","also","only",
+                      "just","even","well","actually","really","truly","actually","never","always"}
+        topic_words = {w for w in animal.lower().split() if len(w) > 3 and w not in _WIKI_STOP}
+        wiki_words  = set(wiki_title.lower().split())
+        # prefix match handles plurals: "rainbows"/"rainbow", "earthquakes"/"earthquake"
+        matched = any(tw.startswith(ww) or ww.startswith(tw) for tw in topic_words for ww in wiki_words)
+        if matched:
+            wiki_snippet = wiki_text[:2500]
     except SystemExit:
         pass
 
@@ -486,8 +500,42 @@ class S1_Animal(Base):
         self._lbl = ctk.CTkLabel(p, text="", text_color="#888888")
         self._lbl.pack(pady=8)
 
+        self._build_recent_uploads(p)
+
         # Pre-generate all missing voice samples in background
         threading.Thread(target=self._prepare_samples, daemon=True).start()
+
+    # ── Recent uploads ───────────────────────────────────────────────────────
+    def _build_recent_uploads(self, p):
+        hist_path = _HERE / "upload_history.json"
+        if not hist_path.exists():
+            return
+        try:
+            hist = json.loads(hist_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        recent = [e for e in hist if e.get("channel") == getattr(self.app, "channel", "faunaworks")][:5]
+        if not recent:
+            return
+        outer = ctk.CTkFrame(p, fg_color="#111122", corner_radius=8)
+        outer.pack(fill="x", padx=60, pady=(0, 6))
+        hdr = ctk.CTkFrame(outer, fg_color="transparent")
+        hdr.pack(fill="x", padx=8, pady=(6, 2))
+        ctk.CTkLabel(hdr, text="Recent Uploads", font=("Arial", 11, "bold"),
+                     text_color="#aaaaaa").pack(side="left")
+        for entry in recent:
+            row = ctk.CTkFrame(outer, fg_color="transparent")
+            row.pack(fill="x", padx=8, pady=1)
+            is_sched = entry.get("status") == "scheduled"
+            time_str = entry.get("publish_at", entry.get("uploaded_at", "")) if is_sched else entry.get("uploaded_at", "")
+            status_tag = " [Sched]" if is_sched else ""
+            ctk.CTkLabel(row, text=time_str, font=("Arial", 10),
+                         text_color="#556655" if is_sched else "#555566",
+                         width=120, anchor="w").pack(side="left")
+            ctk.CTkLabel(row, text=entry.get("title", "") + status_tag, font=("Arial", 11),
+                         text_color="#aaccaa" if is_sched else "#cccccc",
+                         anchor="w").pack(side="left", padx=(4, 0))
+        ctk.CTkFrame(outer, fg_color="transparent", height=4).pack()
 
     # ── Topic queue ──────────────────────────────────────────────────────────
     def _build_queue(self, p):
@@ -838,10 +886,18 @@ class S2_Titles(Base):
     def on_enter(self):
         p = self._reset()
         _h1(p, "Pick a title")
-        _sub(p, f"Animal: {self.app.animal}")
-        var = ctk.StringVar(value=self.app.titles[0] if self.app.titles else "")
+        _is_sci = getattr(self.app, "channel", "faunaworks") == "science"
+        _sub(p, f"{'Topic' if _is_sci else 'Animal'}: {self.app.animal}")
+        # Science: prepend raw topic as first option (already a good title as-is)
+        display_titles = self.app.titles[:]
+        if _is_sci:
+            topic = self.app.animal
+            if topic not in display_titles:
+                display_titles.insert(0, topic)
+            display_titles = display_titles[:5]
+        var = ctk.StringVar(value=display_titles[0] if display_titles else "")
         ctk.CTkFrame(p, height=10, fg_color="transparent").pack()
-        for t in self.app.titles:
+        for t in display_titles:
             row = ctk.CTkFrame(p, fg_color="#1b1b2e", corner_radius=8)
             row.pack(fill="x", padx=50, pady=4)
             ctk.CTkRadioButton(row, text=t, variable=var, value=t,
@@ -890,6 +946,9 @@ class S2_Titles(Base):
         if not title:
             return
         self.app.chosen_title = title
+        # Science: title IS the topic — sync app.animal so grounding matches chosen direction
+        if getattr(self.app, "channel", "faunaworks") == "science":
+            self.app.animal = title
         self._btn.configure(state="disabled", text="Generating script…")
         self._lbl.configure(text="Running generate_script.py…", text_color="#888888")
         self._log.configure(state="normal")
@@ -1698,6 +1757,24 @@ class S7_Upload(Base):
                             topics[i] = (text, True)
                             _save_topics(topics, self.app.channel)
                             break
+                # Persist upload history for S1 display
+                try:
+                    hist_path = Path(__file__).parent / "upload_history.json"
+                    hist = json.loads(hist_path.read_text(encoding="utf-8")) if hist_path.exists() else []
+                    sc = json.loads(self._sc_p.read_text(encoding="utf-8")) if self._sc_p.exists() else {}
+                    entry = {
+                        "title":       sc.get("title", animal),
+                        "url":         url,
+                        "channel":     ch_key,
+                        "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "status":      "scheduled" if publish_at else "uploaded",
+                    }
+                    if publish_at:
+                        entry["publish_at"] = publish_at
+                    hist.insert(0, entry)
+                    hist_path.write_text(json.dumps(hist[:50], indent=2, ensure_ascii=False), encoding="utf-8")
+                except Exception:
+                    pass
                 done_lbl = "Scheduled ✓" if publish_at else "Uploaded ✓"
                 self.after(0, lambda: self._btn.configure(state="disabled", text=done_lbl))
             except Exception as e:

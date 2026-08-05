@@ -172,6 +172,22 @@ def main():
     wiki_title, wiki_text = fetch_wikipedia_text(topic)
     print(f"Found: '{wiki_title}' ({len(wiki_text)} chars)")
 
+    # Guard: fuzzy search can return wrong articles ("How stars are born" → crime film).
+    # Only use grounding if at least one non-trivial topic word appears in the article title.
+    _WIKI_STOP = {"what","when","where","does","have","will","been","they","this","that",
+                  "from","with","into","some","born","form","forms","formed","make","made",
+                  "happen","happens","work","works","exist","need","needs","live","lives",
+                  "grow","grows","cause","causes","found","feel","move","turn","keep","come",
+                  "came","goes","look","seem","show","take","much","more","most","also","only",
+                  "just","even","well","actually","really","truly","actually","never","always"}
+    _topic_words = {w for w in topic.lower().split() if len(w) > 3 and w not in _WIKI_STOP}
+    _wiki_words  = set(wiki_title.lower().split())
+    # prefix match handles plurals: "rainbows"/"rainbow", "earthquakes"/"earthquake"
+    _matched = any(tw.startswith(ww) or ww.startswith(tw) for tw in _topic_words for ww in _wiki_words)
+    if not _matched:
+        print(f"  [WARN] Wikipedia title '{wiki_title}' doesn't match topic — skipping grounding")
+        wiki_text = ""
+
     reference = wiki_text[:MAX_WIKI_CHARS]
     if len(wiki_text) > MAX_WIKI_CHARS:
         reference += "\n[...truncated]"
@@ -227,11 +243,12 @@ def main():
               .replace("{{WIKIPEDIA_TEXT}}", reference))
 
     script = None
+    active_prompt = prompt
     for attempt in range(1, MAX_RETRIES + 1):
         if attempt > 1:
             print(f"Retrying ({attempt}/{MAX_RETRIES})...")
         print(f"Calling Ollama ({OLLAMA_MODEL})...")
-        raw = call_ollama(prompt, num_predict=5000 if is_science else 3500)
+        raw = call_ollama(active_prompt, num_predict=5000 if is_science else 3500)
         try:
             m = re.search(r'\{.*\}', raw, re.DOTALL)
             if not m:
@@ -245,6 +262,10 @@ def main():
         lines = candidate.get("lines", [])
         if len(lines) < MIN_LINES:
             print(f"  [WARN] Only {len(lines)} lines (need {MIN_LINES}+), retrying...")
+            active_prompt = (prompt +
+                f"\n\nCRITICAL REMINDER: Your last response only had {len(lines)} lines. "
+                f"You MUST write at least {MIN_LINES} lines. "
+                f"Add more interesting facts, mechanisms, and examples about this topic to reach the required count.")
             continue
         script = candidate
         break
