@@ -483,11 +483,11 @@ def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
     words = animal.lower().split() if animal else []
     if is_science:
         require_terms = []
-    elif len(words) <= 2:
-        # 1-word: check that word; 2-word: require both ("sea pig" needs both)
+    elif len(words) == 1:
         require_terms = words
     else:
-        # 3+-word: last word only (modifiers like "great" are too generic to require)
+        # 2+-word: last word only — first words are usually color/modifier ("White", "Great")
+        # that stock URLs/filenames rarely include, killing valid results
         require_terms = [words[-1]]
 
     # Suppress food/commercial imagery (sushi, fillet, plate…) unless the keyword or

@@ -64,6 +64,14 @@ def _tiers_path(channel: str = "faunaworks") -> Path:
     return _HERE / f"topics_tiers_{channel}.json"
 
 
+def _yt_video_id(url: str) -> str:
+    if "/shorts/" in url:
+        return url.split("/shorts/")[-1].split("?")[0]
+    if "v=" in url:
+        return url.split("v=")[-1].split("&")[0]
+    return ""
+
+
 def _load_tiers(channel: str = "faunaworks") -> dict:
     p = _tiers_path(channel)
     if not p.exists():
@@ -527,6 +535,14 @@ class S1_Animal(Base):
             row = ctk.CTkFrame(outer, fg_color="transparent")
             row.pack(fill="x", padx=8, pady=1)
             is_sched = entry.get("status") == "scheduled"
+            if is_sched and entry.get("publish_at"):
+                try:
+                    from datetime import datetime as _dt
+                    pub = _dt.strptime(entry["publish_at"], "%Y-%m-%d %H:%M")
+                    if pub <= _dt.now():
+                        is_sched = False
+                except Exception:
+                    pass
             time_str = entry.get("publish_at", entry.get("uploaded_at", "")) if is_sched else entry.get("uploaded_at", "")
             status_tag = " [Sched]" if is_sched else ""
             ctk.CTkLabel(row, text=time_str, font=("Arial", 10),
@@ -535,6 +551,11 @@ class S1_Animal(Base):
             ctk.CTkLabel(row, text=entry.get("title", "") + status_tag, font=("Arial", 11),
                          text_color="#aaccaa" if is_sched else "#cccccc",
                          anchor="w").pack(side="left", padx=(4, 0))
+            voice_token = entry.get("voice", "")
+            voice_name  = next((v[0].split(" (")[0] for v in VOICES if v[1] == voice_token), "")
+            if voice_name:
+                ctk.CTkLabel(row, text=voice_name, font=("Arial", 10),
+                             text_color="#557799", anchor="e").pack(side="right", padx=(4, 0))
         ctk.CTkFrame(outer, fg_color="transparent", height=4).pack()
 
     # ── Topic queue ──────────────────────────────────────────────────────────
@@ -591,13 +612,18 @@ class S1_Animal(Base):
             ctk.CTkLabel(self._qframe, text="No pending topics",
                          text_color="#444444", font=("Arial", 11)).pack(pady=4)
             return
+        self._dot_labels = {}
+        unchecked = []
         for orig_idx, text in pending:
             row = ctk.CTkFrame(self._qframe, fg_color="transparent")
             row.pack(fill="x", pady=1)
             tier = tiers.get(text)
-            if tier:
-                ctk.CTkLabel(row, text="●", font=("Arial", 12),
-                             text_color=_TIER_DOT[tier], width=18).pack(side="left", padx=(2, 0))
+            dot = ctk.CTkLabel(row, text="●", font=("Arial", 12),
+                               text_color=_TIER_DOT.get(tier, "#333355"), width=18)
+            dot.pack(side="left", padx=(2, 0))
+            self._dot_labels[text] = dot
+            if not tier:
+                unchecked.append(text)
             ctk.CTkButton(row, text=text, anchor="w", height=26,
                           font=("Arial", 12), fg_color="#1e1e35",
                           hover_color="#2a2a50",
@@ -608,6 +634,29 @@ class S1_Animal(Base):
                           font=("Arial", 11),
                           command=lambda i=orig_idx: self._delete_topic(i)
                           ).pack(side="left")
+        if unchecked:
+            threading.Thread(target=self._bg_check_tiers, args=(unchecked,), daemon=True).start()
+
+    def _bg_check_tiers(self, topics: list):
+        from coverage_check import check_coverage
+        import concurrent.futures
+        ch = self.app.channel
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            futures = {ex.submit(check_coverage, t, ch): t for t in topics}
+            for fut in concurrent.futures.as_completed(futures):
+                t = futures[fut]
+                try:
+                    cov  = fut.result()
+                    tier = cov.get("video_tier", "red")
+                    tiers = _load_tiers(ch)
+                    tiers[t] = tier
+                    _save_tiers(tiers, ch)
+                    dot = self._dot_labels.get(t)
+                    if dot:
+                        color = _TIER_DOT.get(tier, "#333355")
+                        self.after(0, lambda d=dot, c=color: d.configure(text_color=c))
+                except Exception:
+                    pass
 
     def _pick_topic(self, text: str):
         self._e.delete(0, "end")
@@ -768,29 +817,22 @@ class S1_Animal(Base):
             try:
                 _status("Checking image/video coverage…")
                 from coverage_check import check_coverage
-                cov   = check_coverage(a, channel=self.app.channel)
-                tier  = cov["tier"]
-                inat  = cov["inat"]
-                video = cov.get("video", 0)
-                # Cache tier dot for queue display
+                cov        = check_coverage(a, channel=self.app.channel)
+                video_tier = cov.get("video_tier", "red")
+                video      = cov.get("video", 0)
+                # Cache tier dot for queue display (video is priority)
                 tiers = _load_tiers(self.app.channel)
-                tiers[a] = tier
+                tiers[a] = video_tier
                 _save_tiers(tiers, self.app.channel)
 
-                thin_photo = tier != "green"
-                thin_video = cov.get("video_tier", "red") != "green"
-                if thin_photo or thin_video:
-                    photo_color = "#ff5544" if tier == "red" else "#ffee44"
-                    color       = photo_color if thin_photo else "#aaaaff"
-                    photo_line  = f"  Photos : {inat:,} iNat obs  (tier: {tier})"
-                    video_line  = f"  Video  : {video:,} Pexels clips{'  ← thin' if thin_video else ''}"
-                    issues = []
-                    if thin_photo: issues.append("thin photo coverage = fewer image candidates")
-                    if thin_video: issues.append("thin video coverage = mostly static images in final video")
+                thin_video = video_tier != "green"
+                if thin_video:
+                    color      = "#ff5544" if video_tier == "red" else "#ffee44"
+                    video_line = f"  Video: {video:,} Pexels clips  (tier: {video_tier})"
                     msg = (
-                        f"Coverage for '{a}':\n{photo_line}\n{video_line}\n\n"
-                        + "\n".join(issues)
-                        + "\n\nProceed with script generation anyway?"
+                        f"Coverage for '{a}':\n{video_line}\n\n"
+                        "thin video coverage = mostly static images in final video"
+                        "\n\nProceed with script generation anyway?"
                     )
                     proceed = [None]
                     ev = threading.Event()
@@ -800,9 +842,9 @@ class S1_Animal(Base):
                     self.after(0, _ask)
                     ev.wait()
                     if not proceed[0]:
-                        self.after(0, lambda c=color, t=tier, v=video: (
+                        self.after(0, lambda c=color, v=video, vt=video_tier: (
                             self._lbl.configure(
-                                text=f"Coverage: {t} photo / {v} video — cancelled", text_color=c),
+                                text=f"Coverage: {vt} video ({v} clips) — cancelled", text_color=c),
                             self._btn.configure(state="normal", text="Generate Titles →"),
                         ))
                         return
@@ -862,7 +904,7 @@ class S1_Animal(Base):
                         topics.append((r["animal"], False))
                         existing.add(r["animal"].lower())
                         added += 1
-                    tiers[r["animal"]] = r["tier"]
+                    tiers[r["animal"]] = r.get("video_tier", r["tier"])
                 _save_topics(topics, ch)
                 _save_tiers(tiers, ch)
 
@@ -1615,9 +1657,10 @@ class S7_Upload(Base):
         nav = ctk.CTkFrame(p, fg_color="transparent")
         nav.pack(pady=4)
         _back_btn(nav, self.app, S6_Preview)
-        ctk.CTkButton(nav, text="New Video ↺", width=140, height=34,
-                      fg_color="#1a4a1a",
-                      command=lambda: self.app.goto(S1_Animal)).pack(side="left", padx=6)
+        self._new_btn = ctk.CTkButton(nav, text="New Video ↺", width=140, height=34,
+                      fg_color="#1a4a1a", state="disabled",
+                      command=lambda: self.app.goto(S1_Animal))
+        self._new_btn.pack(side="left", padx=6)
 
     def _on_sched_change(self):
         later = self._sched_var.get() == "later"
@@ -1768,6 +1811,7 @@ class S7_Upload(Base):
                         "channel":     ch_key,
                         "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                         "status":      "scheduled" if publish_at else "uploaded",
+                        "voice":       getattr(self.app, "voice", ""),
                     }
                     if publish_at:
                         entry["publish_at"] = publish_at
@@ -1776,7 +1820,10 @@ class S7_Upload(Base):
                 except Exception:
                     pass
                 done_lbl = "Scheduled ✓" if publish_at else "Uploaded ✓"
-                self.after(0, lambda: self._btn.configure(state="disabled", text=done_lbl))
+                self.after(0, lambda: (
+                    self._btn.configure(state="disabled", text=done_lbl),
+                    self._new_btn.configure(state="normal"),
+                ))
             except Exception as e:
                 self.after(0, lambda err=e: (
                     self._append(f"Error: {err}"),
