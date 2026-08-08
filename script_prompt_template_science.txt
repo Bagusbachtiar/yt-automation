@@ -46,13 +46,21 @@ STRICT RULES:
    - "scale" (for magnitude/measurement) → ruler or fish scales. Write "richter scale chart" or "magnitude scale seismograph".
    - "brain scan" / "MRI" / "X-ray" (for neuroscience/psychology lines) → resolves to hospital patient, medical procedure, clinical imagery. NEVER use for concept lines about perception, cognition, or pattern recognition. Instead show the phenomenon itself: pareidolia → "face rock cliff" or "cloud face shape"; pattern recognition → "neuron network illustration" or "optical illusion pattern"; brain function → "brain illustration colorful" or "neuron synapse close".
    - General rule: physics abstractions need concrete physical stand-ins — show the experiment, instrument, or real-world result.
-9. image_keyword must directly depict the subject of THAT specific line. Re-read each line and ask: would a photo matching this keyword make sense playing under this exact sentence? If the keyword contains any banned adjective (see rule 7), rewrite it.
-10. image_keyword_fallback: a broader, safer version of the keyword. For space: just the object name ("saturn", "black hole", "nebula"). For physics: the phenomenon ("lightning", "ice", "magnet"). Simpler is always safer — a correct image beats an empty search.
-11. Tone: clear, punchy, conversational — speak to a curious general audience, not a specialist. Short sentences hit harder than long ones. Avoid jargon unless you immediately explain it. NEVER use dashes, hyphens, or em dashes (-, --, —) anywhere in narration lines or the title. Replace with commas or split into separate sentences.
-12. End with a short, memorable closing line — a surprising scale, an open question, or a thought that sticks. No call to subscribe. NEVER end with "So the next time you...", "Now you know...", "Isn't that amazing?", or any call-to-action phrasing.
-13. Write ORIGINAL narration in your own words. Do not copy source material directly — write as spoken narration.
-14. HIGHLIGHT TERMS: Include a "highlight_terms" array listing 1-4 scientific or technical words actually used in the script that a general audience might not know. These will appear yellow in subtitles. Only include words that appear verbatim in the lines.
-15. SEO FIELDS: Include:
+9. KEYWORD SPECIFICITY RULE: Anchor multi-word keywords on proper nouns, scientific names, or instrument names — never on common English words that describe many things. Common words like "surface", "tracks", "field", "wave", "current", "scale" match thousands of unrelated stock clips. Proper nouns and scientific names do not.
+   - BAD: "moon surface rover tracks" → "surface" matches glass/skin/fabric; "tracks" matches beach/bicycle/train
+   - GOOD: "Apollo lunar footprint" or "Mars rover NASA" — proper nouns narrow to the actual subject
+   - BAD: "deep space orbit view" → "orbit" matches satellites, planes, logos
+   - GOOD: "Hubble telescope orbit" or "ISS Earth orbit" — named object anchors the search
+   - BAD: "supernova explosion bright" → "explosion" matches fireworks, war; "bright" matches anything lit
+   - GOOD: "supernova remnant nebula" or "Crab Nebula supernova" — scientific name is the anchor
+   - Rule: if your keyword contains no proper noun, scientific name, or instrument name, add one. If you cannot, use the closest named object or location associated with the concept.
+10. image_keyword must directly depict the subject of THAT specific line. Re-read each line and ask: would a photo matching this keyword make sense playing under this exact sentence? If the keyword contains any banned adjective (see rule 7), rewrite it.
+11. image_keyword_fallback: a broader, safer version of the keyword. For space: just the object name ("saturn", "black hole", "nebula"). For physics: the phenomenon ("lightning", "ice", "magnet"). Simpler is always safer — a correct image beats an empty search.
+12. Tone: clear, punchy, conversational — speak to a curious general audience, not a specialist. Short sentences hit harder than long ones. Avoid jargon unless you immediately explain it. NEVER use dashes, hyphens, or em dashes (-, --, —) anywhere in narration lines or the title. Replace with commas or split into separate sentences.
+13. End with a short, memorable closing line — a surprising scale, an open question, or a thought that sticks. No call to subscribe. NEVER end with "So the next time you...", "Now you know...", "Isn't that amazing?", or any call-to-action phrasing.
+14. Write ORIGINAL narration in your own words. Do not copy source material directly — write as spoken narration.
+15. HIGHLIGHT TERMS: Include a "highlight_terms" array listing 1-4 scientific or technical words actually used in the script that a general audience might not know. These will appear yellow in subtitles. Only include words that appear verbatim in the lines.
+16. SEO FIELDS: Include:
     - "yt_description": 2-3 sentences that naturally mention the topic, the surprising fact, and why it matters. Write like a human, not a keyword list. No hashtags here.
     - "yt_tags": exactly 15 tags that cover all three layers:
         BROAD (4 tags): terms millions search — "science facts", "did you know", "how does it work", "science explained"

@@ -112,17 +112,25 @@ _FOOD_SIGNALS = frozenset({
     # Food preparation / serving
     "sushi", "sashimi", "fillet", "filet",
     "seafood", "fishmonger",
-    "grilled", "smoked", "fried", "baked", "cooked",
-    "plate", "dish", "meal", "recipe",
+    "grilled", "smoked", "fried", "baked", "cooked", "cooking",
+    "plate", "dish", "meal", "recipe", "food", "steak",
     "canned", "grocery", "supermarket", "restaurant",
     "cutting board",
-    # Raw / dead food context ("raw" alone risks false positives like "raw footage")
-    "raw fish", "fresh catch",
+    # Raw / dead food context
+    "raw fish", "raw salmon", "raw tuna", "fresh catch",
     # Commercial / market
     "fish market", "market stall", "seafood market",
     # Industrial fishing — excluded unless line is about overfishing/conservation
     "fishing boat", "fishing net", "fishing vessel", "fish haul",
 })
+def _url_no_food(url: str, excl: frozenset) -> bool:
+    """True if URL filename doesn't contain any food signal. Fast filter for Commons/wiki URLs."""
+    if not excl:
+        return True
+    name = url.split("/")[-1].split("?")[0].lower().replace("_", " ").replace("-", " ")
+    return not any(e in name for e in excl)
+
+
 _FISHING_QUERY_SIGNALS = frozenset({
     "fishing", "fisherman", "overfishing", "bycatch",
     "trawl", "trawler", "commercial",
@@ -410,8 +418,8 @@ def pexels_video_search(query: str, api_key: str, limit: int = CANDIDATES_PER_SO
         all_parsed = _parse(data.get("videos", []))
         matched = [
             r for r in all_parsed
-            if (not incl or all(t in r["_text"] for t in incl))
-            and (not excl or not any(e in r["_text"] for e in excl))
+            if (not incl or all(t in r["_text"].replace("-", "") for t in incl))
+            and (not excl or not any(e in r["_text"].replace("-", " ") for e in excl))
         ][:limit]
         return [{"url": r["url"], "thumb": r["thumb"]} for r in matched]
     except urllib.error.HTTPError as e:
@@ -482,7 +490,15 @@ def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
     is_science = channel == "science"
     words = animal.lower().split() if animal else []
     if is_science:
-        require_terms = []
+        # Build require_terms from the image_keyword itself so multi-word descriptive
+        # phrases don't pull clips that match only one generic word ("surface", "tracks").
+        qwords = query.lower().split()
+        if len(qwords) >= 3:
+            require_terms = qwords[-2:]  # ponytail: both last 2 words must appear; upgrade to phrase-match if still collisions
+        elif len(qwords) >= 1:
+            require_terms = [qwords[-1]]
+        else:
+            require_terms = []
     elif len(words) == 1:
         require_terms = words
     else:
@@ -497,11 +513,12 @@ def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
                       any(t in line_text.lower() for t in _FISHING_LINE_SIGNALS)
     exclude_terms = frozenset() if fishing_context else _FOOD_SIGNALS
 
+    _nf = lambda u: _url_no_food(u, exclude_terms)
     return {
-        "wikipedia":    [wiki_url] if wiki_url else [],
-        "wiki_keyword": wikipedia_keyword_search(query),
-        "flickr":       flickr_commons_search(query, flickr_key) if flickr_key else [],
-        "commons":      commons_search(query),
+        "wikipedia":    [wiki_url] if wiki_url and _nf(wiki_url) else [],
+        "wiki_keyword": [u for u in wikipedia_keyword_search(query) if _nf(u)],
+        "flickr":       [u for u in flickr_commons_search(query, flickr_key) if _nf(u)] if flickr_key else [],
+        "commons":      [u for u in commons_search(query) if _nf(u)],
         "pexels":       _pexels_with_fallback(query, pexels_key, pexels_search, require_terms, exclude_terms)       if pexels_key else [],
         "pixabay":      pixabay_search(query, pixabay_key, require_terms=require_terms, exclude_terms=exclude_terms) if pixabay_key else [],
         "inaturalist":  [] if is_science else inaturalist_search(query),
@@ -566,6 +583,16 @@ def main():
     all_candidates = {}
     used_wiki = set()
 
+    # Fetch a global video pool for the animal once (per-line keywords are too narrow for video)
+    global_vids = []
+    animal_global = script.get("animal") or script.get("topic", "")
+    is_science_global = channel == "science"
+    if pexels_key and animal_global and not is_science_global:
+        _req = [animal_global.lower().split()[-1]]
+        global_vids = pexels_video_search(animal_global, pexels_key, limit=20,
+                                          require_terms=_req, exclude_terms=_FOOD_SIGNALS) or []
+        print(f"Global video pool: {len(global_vids)} clips for '{animal_global}'\n")
+
     for idx, line in enumerate(lines):
         lid = line["id"]
         keyword = (
@@ -584,6 +611,9 @@ def main():
         c = fetch_candidates(keyword, pexels_key, pixabay_key, flickr_key=flickr_key,
                              wiki_url=wiki_url, animal=animal, line_text=line.get("text", ""),
                              channel=channel)
+        if global_vids:
+            seen_gv = {e["url"] for e in c["pexels_video"] if isinstance(e, dict)}
+            c["pexels_video"] += [v for v in global_vids if v["url"] not in seen_gv]
         if not c["wiki_keyword"] and fallback_keyword and fallback_keyword != keyword:
             print(f"    [fallback] no wiki match — trying: {fallback_keyword}")
             c["wiki_keyword"] = wikipedia_keyword_search(fallback_keyword)
