@@ -1,16 +1,15 @@
 # science topic queue — managed by the app
-Why Saturn has rings
 DONE: How auroras happen
 DONE: Why the sky is blue
-How lightning forms
 DONE: How volcanoes erupt
-Why snowflakes are symmetrical
 DONE: How black holes form
-Why the moon has craters
-How coral reefs grow
-Why glass is transparent
-How earthquakes happen
-Why fire needs oxygen
+DONE: How coral reefs grow
 DONE: How rainbows form
 DONE: Why the ocean is salty
 DONE: How stars are born
+DONE: How do birds navigate during migration?
+DONE: Can plants feel pain?
+DONE: Why does alcohol make you feel warm?
+DONE: Why do some animals glow in the dark?
+DONE: Why do we dream?
+DONE: How do caves form?

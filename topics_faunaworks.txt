@@ -1,71 +1,21 @@
 # faunaworks topic queue — managed by the app
-Brown Bear
-White Rhinoceros
-African Elephant
-African Lion
-Gray Wolf
-Red Fox
-Snow Leopard
-Great White Shark
-Sea Turtle
+DONE: Snow Leopard
+DONE: Great White Shark
 DONE: Sea Lion
-Golden Eagle
-Red Panda
-Green Iguana
-Secretary Bird
-Blue-ringed Octopus
-Leafy Seadragon
-Manta Ray
-Atlantic Puffin
-Bald Eagle
-Saltwater Crocodile
-Barn Owl
-Arctic Fox
-Giant Panda
+DONE: Red Panda
+DONE: Saltwater Crocodile
+DONE: Barn Owl
 DONE: Polar Bear
-Octopus
-Mandarin Duck
-King Cobra
 DONE: Zebra
-Harpy Eagle
-Komodo Dragon
-Leopard
-Giraffe
-Hammerhead Shark
-Emperor Penguin
-Mantis Shrimp
-Fennec Fox
+DONE: Hammerhead Shark
 DONE: Cheetah
-Whale Shark
 DONE: Hippopotamus
-Lynx
-Gorilla
-Sloth
-Mako Shark
-Koala
-Peacock
-Cougar
-Meerkat
-Lionfish
-Tiger
+DONE: Peacock
 DONE: Hummingbird
-Orca
-Chameleon
-Humpback Whale
-Flamingo
-Jellyfish
-Toucan
-Pelican
-Pufferfish
-Bottlenose Dolphin
-Jaguar
-Kangaroo
-Otter
-Platypus
-Macaw
-Chimpanzee
-Clownfish
-Shoebill
+DONE: Chameleon
+DONE: Flamingo
+DONE: Pelican
 DONE: Capybara
-Axolotl
-Wolverine
+DONE: Leaf-cutter Ant
+DONE: Ladybug
+DONE: Camel
