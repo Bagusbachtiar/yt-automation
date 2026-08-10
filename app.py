@@ -837,12 +837,15 @@ class S1_Animal(Base):
                 cov        = check_coverage(a, channel=self.app.channel)
                 video_tier = cov.get("video_tier", "red")
                 video      = cov.get("video", 0)
-                # Cache tier dot for queue display (video is priority)
+                is_sci     = self.app.channel == "science"
+                # Dot color: science uses photo tier (NASA/Commons); fauna uses video tier
+                dot_tier   = cov["tier"] if is_sci else video_tier
                 tiers = _load_tiers(self.app.channel)
-                tiers[a] = video_tier
+                tiers[a] = dot_tier
                 _save_tiers(tiers, self.app.channel)
 
-                thin_video = video_tier != "green"
+                # Science uses NASA/Commons images — video coverage warning not applicable
+                thin_video = (not is_sci) and (video_tier != "green")
                 if thin_video:
                     color      = "#ff5544" if video_tier == "red" else "#ffee44"
                     video_line = f"  Video: {video:,} Pexels clips  (tier: {video_tier})"
