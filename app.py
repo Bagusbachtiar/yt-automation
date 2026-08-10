@@ -909,10 +909,12 @@ class S1_Animal(Base):
                         self.after(0, lambda d=done[0], t=total: self._disc_lbl.configure(
                             text=f"Checking coverage… {d}/{t}", text_color="#666688"))
 
-                # Only queue animals with workable video coverage — red = thin, skip entirely
-                good    = [r for r in results if r.get("video_tier", r["tier"]) != "red"]
+                # Science: filter on photo tier (NASA/Commons) — portrait Pexels videos are rare
+                # for abstract topics and not the primary source. Fauna: filter on video tier.
+                _qual = (lambda r: r["tier"]) if ch == "science" else (lambda r: r.get("video_tier", r["tier"]))
+                good    = [r for r in results if _qual(r) != "red"]
                 skipped = len(results) - len(good)
-                good.sort(key=lambda r: ({"green": 0, "yellow": 1}[r.get("video_tier", "yellow")],
+                good.sort(key=lambda r: ({"green": 0, "yellow": 1}[_qual(r)],
                                          -r.get("video", 0)))
 
                 ch = self.app.channel
