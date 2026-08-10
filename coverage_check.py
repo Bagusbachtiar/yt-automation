@@ -21,8 +21,8 @@ _UA = "yt-automation/1.0 (bagusbachtiar50@gmail.com)"
 
 GREEN_INAT   = 100   # >= this: strong wildlife photo coverage
 YELLOW_INAT  = 20    # >= this: some coverage, workable
-GREEN_VIDEO  = 10    # >= this: good Pexels video coverage
-YELLOW_VIDEO = 5     # >= this: workable video coverage
+GREEN_VIDEO  = 6     # >= this: good filtered portrait clip count (matches S4 pipeline)
+YELLOW_VIDEO = 3     # >= this: borderline workable
 
 
 def _load_pexels_key() -> str:
@@ -45,11 +45,20 @@ def _get(url: str, extra_headers: dict | None = None) -> dict:
 
 
 def _pexels_video_count(animal: str, api_key: str) -> int:
-    params = urllib.parse.urlencode({"query": animal, "per_page": 1})
-    return _get(
-        f"https://api.pexels.com/videos/search?{params}",
-        extra_headers={"Authorization": api_key},
-    ).get("total_results", 0)
+    """Filtered portrait-clip count — applies the same require_terms logic as the S4 pipeline
+    so coverage dots reflect actual usable clips, not raw Pexels total_results."""
+    words = animal.lower().split()
+    require = words if len(words) == 1 else [words[-1]]  # matches fetch_candidates logic
+    params = urllib.parse.urlencode({"query": animal, "per_page": 80, "orientation": "portrait"})
+    data = _get(f"https://api.pexels.com/videos/search?{params}",
+                extra_headers={"Authorization": api_key})
+    count = 0
+    for v in data.get("videos", []):
+        thumb = v.get("image", "").split("/")[-1].split("?")[0].lower()
+        text  = (v.get("url", "").lower() + " " + thumb).replace("-", "")
+        if all(t in text for t in require):
+            count += 1
+    return count
 
 
 def _inat_count(animal: str) -> int:
