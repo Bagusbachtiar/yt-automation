@@ -927,7 +927,7 @@ class S1_Animal(Base):
                         topics.append((r["animal"], False))
                         existing.add(r["animal"].lower())
                         added += 1
-                    tiers[r["animal"]] = r.get("video_tier", r["tier"])
+                    tiers[r["animal"]] = _qual(r)  # photo tier for science, video tier for fauna
                 _save_topics(topics, ch)
                 _save_tiers(tiers, ch)
 

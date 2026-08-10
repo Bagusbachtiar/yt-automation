@@ -44,12 +44,12 @@ def _get(url: str, extra_headers: dict | None = None) -> dict:
         return json.loads(r.read())
 
 
-def _pexels_video_count(animal: str, api_key: str) -> int:
-    """Filtered portrait-clip count — applies the same require_terms logic as the S4 pipeline
-    so coverage dots reflect actual usable clips, not raw Pexels total_results."""
-    words = animal.lower().split()
-    require = words if len(words) == 1 else [words[-1]]  # matches fetch_candidates logic
-    params = urllib.parse.urlencode({"query": animal, "per_page": 80, "orientation": "portrait"})
+def _pexels_video_count(query: str, api_key: str, require: list[str] | None = None) -> int:
+    """Filtered portrait-clip count matching the S4 pipeline's require_terms logic."""
+    if require is None:
+        words = query.lower().split()
+        require = words if len(words) == 1 else [words[-1]]
+    params = urllib.parse.urlencode({"query": query, "per_page": 80, "orientation": "portrait"})
     data = _get(f"https://api.pexels.com/videos/search?{params}",
                 extra_headers={"Authorization": api_key})
     count = 0
@@ -103,12 +103,23 @@ _SPACE_WORDS = {
 GREEN_NASA  = 20   # >= this: good NASA image coverage
 
 
+_STRIP_Q = None  # compiled lazily
+
 def _strip_question(topic: str) -> str:
-    """Remove leading question words and filler verbs for cleaner API queries."""
+    """Strip question prefix + filler verbs. Two-pass handles 'how do', 'why is', 'what causes'."""
     import re as _re
-    t = _re.sub(r'^(why|how|what|when|where|is|does|can|do|did|will)\s+', '', topic.lower()).strip()
-    t = _re.sub(r'\b(has|have|are|is|was|were|exist|gets?|makes?)\b', '', t)
+    t = topic.lower().strip().rstrip("?.")
+    _q = r'(?:why|how|what|when|where|is|does|can|do|did|will|are|was|were|has|have|could|would|should)'
+    t = _re.sub(rf'^\s*{_q}\s+{_q}?\s*', '', t).strip()  # strip 1-2 leading question words
+    t = _re.sub(r'\b(?:has|have|are|is|was|were|exist|gets?|makes?|does|do|the|a|an)\b', '', t)
     return ' '.join(t.split())
+
+
+_SCI_STOP = frozenset({
+    "the","a","an","of","in","at","to","for","and","or","is","was","by",
+    "with","their","almost","very","some","each","other","so","too","yet",
+    "also","just","even","still","only","about","over","under","into","onto",
+})
 
 
 def _nasa_count(topic: str) -> int:
@@ -137,18 +148,24 @@ def check_coverage(topic: str, channel: str = "faunaworks") -> dict:
     if channel == "science":
         result = {"animal": topic, "inat": 0, "gbif": 0, "commons": 0, "video": 0, "nasa": 0}
         is_space = any(w in topic.lower() for w in _SPACE_WORDS)
+        # Strip question phrasing so "How do butterflies taste with their feet?"
+        # becomes "butterflies taste with their feet" for image searches
+        stripped = _strip_question(topic)
         if is_space:
             try:
-                result["nasa"] = _nasa_count(topic)
+                result["nasa"] = _nasa_count(topic)  # _nasa_count strips internally
             except Exception:
                 pass
         try:
-            result["commons"] = _commons_count(topic)
+            result["commons"] = _commons_count(stripped)
         except Exception:
             pass
         if pexels_key:
             try:
-                result["video"] = _pexels_video_count(topic, pexels_key)
+                # Use first meaningful noun of stripped query as require_term
+                _req_words = [w for w in stripped.split() if w not in _SCI_STOP and len(w) > 2]
+                _sci_req   = [_req_words[0]] if _req_words else []
+                result["video"] = _pexels_video_count(stripped, pexels_key, require=_sci_req)
             except Exception:
                 pass
         # Photo tier: space → best of NASA or Commons; general science → Commons
