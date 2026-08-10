@@ -481,6 +481,29 @@ def nasa_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[dict]:
         return []
 
 
+def openverse_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
+    """CC/public-domain images from Openverse (aggregates Flickr, Wikimedia, Smithsonian, NASA…).
+    # ponytail: 100 req/day unauthenticated; set OPENVERSE_API_KEY in .env for 10k/day
+    """
+    params = urllib.parse.urlencode({
+        "q":            query,
+        "page_size":    min(limit * 3, 20),
+        "license_type": "commercial",
+    })
+    headers = {"User-Agent": "yt-automation/1.0 (bagusbachtiar50@gmail.com)"}
+    ov_key = os.environ.get("OPENVERSE_API_KEY", "").strip()
+    if ov_key:
+        headers["Authorization"] = f"Bearer {ov_key}"
+    try:
+        req = urllib.request.Request(f"https://api.openverse.org/v1/images/?{params}", headers=headers)
+        with urllib.request.urlopen(req, timeout=12, context=_SSL_CTX) as r:
+            data = json.loads(r.read())
+        return [item["url"] for item in data.get("results", []) if item.get("url")][:limit]
+    except Exception as e:
+        print(f"    [Openverse] error: {e}")
+        return []
+
+
 def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
                      flickr_key: str = "", wiki_url: str | None = None,
                      animal: str = "", line_text: str = "",
@@ -525,6 +548,7 @@ def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
         "gbif":         [] if is_science else gbif_search(query),
         "pexels_video": _pexels_with_fallback(query, pexels_key, pexels_video_search, require_terms, exclude_terms) if pexels_key else [],
         "nasa":         nasa_search(query) if is_science else [],
+        "openverse":    [u for u in openverse_search(query) if _nf(u)],
     }
 
 
@@ -618,7 +642,7 @@ def main():
             print(f"    [fallback] no wiki match — trying: {fallback_keyword}")
             c["wiki_keyword"] = wikipedia_keyword_search(fallback_keyword)
         total = sum(len(v) for v in c.values())
-        print(f"    wiki:{len(c['wikipedia'])}  wiki_kw:{len(c['wiki_keyword'])}  flickr:{len(c['flickr'])}  commons:{len(c['commons'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  inat:{len(c['inaturalist'])}  gbif:{len(c['gbif'])}  pexels_vid:{len(c['pexels_video'])}  nasa:{len(c['nasa'])}  total:{total}")
+        print(f"    wiki:{len(c['wikipedia'])}  wiki_kw:{len(c['wiki_keyword'])}  flickr:{len(c['flickr'])}  commons:{len(c['commons'])}  openverse:{len(c['openverse'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  inat:{len(c['inaturalist'])}  gbif:{len(c['gbif'])}  pexels_vid:{len(c['pexels_video'])}  nasa:{len(c['nasa'])}  total:{total}")
         all_candidates[str(lid)] = {
             "text":    line["text"],
             "keyword": keyword,
@@ -643,14 +667,14 @@ def main():
                 print(f"  {lid_str}.jpg already exists, skip")
                 continue
             sources = data["sources"]
-            url = (sources["wikipedia"] or sources["wiki_keyword"] or sources["flickr"] or sources["commons"] or sources["pexels"] or sources["pixabay"] or sources["inaturalist"] or sources["gbif"] or [None])[0]
+            url = (sources["wikipedia"] or sources["wiki_keyword"] or sources["flickr"] or sources["commons"] or sources["openverse"] or sources["pexels"] or sources["pixabay"] or sources["inaturalist"] or sources["gbif"] or [None])[0]
             if not url:
                 print(f"  Line {lid_str}: no result from any source")
                 failed += 1
                 continue
             try:
                 download(url, dest)
-                for src in ("wikipedia", "wiki_keyword", "flickr", "commons", "pexels", "pixabay", "inaturalist", "gbif"):
+                for src in ("wikipedia", "wiki_keyword", "flickr", "commons", "openverse", "pexels", "pixabay", "inaturalist", "gbif"):
                     if url in sources.get(src, []):
                         break
                 print(f"  {lid_str}.jpg  ({src}, {dest.stat().st_size // 1024} KB)")

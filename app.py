@@ -6,6 +6,7 @@ Animal → Titles → Script → Images → Assembly → Preview → Upload
 Requirements: pip install customtkinter pillow
 """
 import concurrent.futures
+import ctypes, ctypes.wintypes
 import io, json, os, re, shutil, ssl, subprocess, sys, tempfile, threading, tkinter.messagebox, urllib.request
 import cv2
 from datetime import datetime, timedelta, timezone
@@ -33,8 +34,8 @@ _SSL.check_hostname = False
 _SSL.verify_mode    = ssl.CERT_NONE
 
 _SRC_ORDER = {
-    "faunaworks": ["pexels_video","wiki_infobox","wikipedia","pexels","pixabay","inaturalist","gbif","commons","flickr","wiki_keyword"],
-    "science":    ["pexels_video","nasa","wiki_infobox","wikipedia","commons","pexels","pixabay","wiki_keyword"],
+    "faunaworks": ["pexels_video","wiki_infobox","wikipedia","pexels","pixabay","inaturalist","gbif","commons","openverse","flickr","wiki_keyword"],
+    "science":    ["pexels_video","nasa","wiki_infobox","wikipedia","commons","openverse","pexels","pixabay","wiki_keyword"],
 }
 SRC_ORDER = _SRC_ORDER["faunaworks"]   # default for any legacy callers
 _VID      = {"pexels_video"}
@@ -62,6 +63,22 @@ def _topics_path(channel: str = "faunaworks") -> Path:
 
 def _tiers_path(channel: str = "faunaworks") -> Path:
     return _HERE / f"topics_tiers_{channel}.json"
+
+
+def _flash_taskbar(win) -> None:
+    """Flash the taskbar button until the user focuses the window."""
+    try:
+        class FLASHWINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("hwnd", ctypes.c_void_p),
+                        ("dwFlags", ctypes.c_uint), ("uCount", ctypes.c_uint),
+                        ("dwTimeout", ctypes.c_uint)]
+        FLASHW_ALL      = 3
+        FLASHW_TIMERNOFG = 12
+        fi = FLASHWINFO(cbSize=ctypes.sizeof(FLASHWINFO), hwnd=win.winfo_id(),
+                        dwFlags=FLASHW_ALL | FLASHW_TIMERNOFG, uCount=0, dwTimeout=0)
+        ctypes.windll.user32.FlashWindowEx(ctypes.byref(fi))
+    except Exception:
+        pass
 
 
 def _yt_video_id(url: str) -> str:
@@ -850,7 +867,7 @@ class S1_Animal(Base):
                         return
 
                 self.app.titles = gen_titles(a, status_cb=_status, channel=self.app.channel)
-                self.after(0, lambda: self.app.goto(S2_Titles))
+                self.after(0, lambda: (_flash_taskbar(self.app), self.app.goto(S2_Titles)))
             except Exception as e:
                 self.after(0, lambda err=e: (
                     self._lbl.configure(text=f"Error: {err}", text_color="#ff5555"),
@@ -868,8 +885,8 @@ class S1_Animal(Base):
 
         def run():
             try:
-                animals = (brainstorm_topics(theme) if self.app.channel == "science"
-                           else brainstorm_animals(theme))
+                animals = (brainstorm_topics(theme, count=30) if self.app.channel == "science"
+                           else brainstorm_animals(theme, count=30))
                 if not animals:
                     self.after(0, lambda: (
                         self._disc_lbl.configure(text="No animals returned — try rephrasing", text_color="#ff5555"),
@@ -892,14 +909,18 @@ class S1_Animal(Base):
                         self.after(0, lambda d=done[0], t=total: self._disc_lbl.configure(
                             text=f"Checking coverage… {d}/{t}", text_color="#666688"))
 
-                results.sort(key=lambda r: ({"green": 0, "yellow": 1, "red": 2}[r["tier"]], -r["inat"]))
+                # Only queue animals with workable video coverage — red = thin, skip entirely
+                good    = [r for r in results if r.get("video_tier", r["tier"]) != "red"]
+                skipped = len(results) - len(good)
+                good.sort(key=lambda r: ({"green": 0, "yellow": 1}[r.get("video_tier", "yellow")],
+                                         -r.get("video", 0)))
 
                 ch = self.app.channel
                 topics = _load_topics(ch)
                 existing = {t.lower() for t, _ in topics}
                 tiers = _load_tiers(ch)
                 added = 0
-                for r in results:
+                for r in good:
                     if r["animal"].lower() not in existing:
                         topics.append((r["animal"], False))
                         existing.add(r["animal"].lower())
@@ -908,8 +929,9 @@ class S1_Animal(Base):
                 _save_topics(topics, ch)
                 _save_tiers(tiers, ch)
 
-                self.after(0, lambda a=added: (
-                    self._disc_lbl.configure(text=f"Added {a} new animals to queue", text_color="#44bb66"),
+                skip_txt = f" | {skipped} thin skipped" if skipped else ""
+                self.after(0, lambda a=added, s=skip_txt: (
+                    self._disc_lbl.configure(text=f"Added {a} new{s}", text_color="#44bb66"),
                     self._disc_btn.configure(state="normal", text="Discover ↺"),
                     self._disc_entry.delete(0, "end"),
                     self._refresh_queue(),
@@ -975,7 +997,7 @@ class S2_Titles(Base):
         def run():
             try:
                 self.app.titles = gen_titles(self.app.animal, channel=self.app.channel)
-                self.after(0, lambda: self.app.goto(S2_Titles))
+                self.after(0, lambda: (_flash_taskbar(self.app), self.app.goto(S2_Titles)))
             except Exception as e:
                 self.after(0, lambda err=e: (
                     self._lbl.configure(text=f"Error: {err}", text_color="#ff5555"),
@@ -1025,7 +1047,7 @@ class S2_Titles(Base):
                     )
                 self.app.script["title"] = title
                 SCRIPT_JSON.write_text(json.dumps(self.app.script, indent=2, ensure_ascii=False), encoding="utf-8")
-                self.after(0, lambda: self.app.goto(S3_Script))
+                self.after(0, lambda: (_flash_taskbar(self.app), self.app.goto(S3_Script)))
             except Exception as e:
                 self.after(0, lambda err=e: (
                     self._lbl.configure(text=f"Error: {err}", text_color="#ff5555"),
@@ -1186,6 +1208,7 @@ class S4_Images(Base):
                     pass  # skip bad thumbnails
 
             self.after(0, lambda: self._build_grid(items))
+            self.after(0, lambda: _flash_taskbar(self.app))
         except Exception as e:
             self.after(0, lambda err=e:
                        self._stlbl.configure(text=f"Error: {err}", text_color="#ff5555"))
@@ -1507,6 +1530,7 @@ class S5_Assembly(Base):
             self.after(0, lambda: (
                 self._bar.set(1.0),
                 self._stlbl.configure(text="Done!", text_color="#44ff66"),
+                _flash_taskbar(self.app),
             ))
             self.after(900, lambda: self.app.goto(S6_Preview))
         except Exception as e:
@@ -1823,6 +1847,7 @@ class S7_Upload(Base):
                 self.after(0, lambda: (
                     self._btn.configure(state="disabled", text=done_lbl),
                     self._new_btn.configure(state="normal"),
+                    _flash_taskbar(self.app),
                 ))
             except Exception as e:
                 self.after(0, lambda err=e: (
