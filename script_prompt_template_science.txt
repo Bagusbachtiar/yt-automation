@@ -54,13 +54,19 @@ STRICT RULES:
    - BAD: "supernova explosion bright" → "explosion" matches fireworks, war; "bright" matches anything lit
    - GOOD: "supernova remnant nebula" or "Crab Nebula supernova" — scientific name is the anchor
    - Rule: if your keyword contains no proper noun, scientific name, or instrument name, add one. If you cannot, use the closest named object or location associated with the concept.
-10. image_keyword must directly depict the subject of THAT specific line. Re-read each line and ask: would a photo matching this keyword make sense playing under this exact sentence? If the keyword contains any banned adjective (see rule 7), rewrite it.
-11. image_keyword_fallback: a broader, safer version of the keyword. For space: just the object name ("saturn", "black hole", "nebula"). For physics: the phenomenon ("lightning", "ice", "magnet"). Simpler is always safer — a correct image beats an empty search.
-12. Tone: clear, punchy, conversational — speak to a curious general audience, not a specialist. Short sentences hit harder than long ones. Avoid jargon unless you immediately explain it. NEVER use dashes, hyphens, or em dashes (-, --, —) anywhere in narration lines or the title. Replace with commas or split into separate sentences.
-13. End with a short, memorable closing line — a surprising scale, an open question, or a thought that sticks. No call to subscribe. NEVER end with "So the next time you...", "Now you know...", "Isn't that amazing?", or any call-to-action phrasing.
-14. Write ORIGINAL narration in your own words. Do not copy source material directly — write as spoken narration.
-15. HIGHLIGHT TERMS: Include a "highlight_terms" array listing 1-4 scientific or technical words actually used in the script that a general audience might not know. These will appear yellow in subtitles. Only include words that appear verbatim in the lines.
-16. SEO FIELDS: Include:
+10. TOPIC ANCHOR RULE: If a line explicitly mentions the video's main subject (e.g. "Mars", "neutron star", "Saturn"), that subject MUST appear in the image_keyword. A keyword that drops the topic name drifts into generic territory that could apply to any video — this is always wrong.
+   - Line says "On Mars, the air pressure is only 0.6 pounds per square inch" → keyword MUST contain "Mars" or "Martian"
+   - Line says "A neutron star packs more mass than our Sun" → keyword MUST contain "neutron star" or "pulsar"
+   - BAD: "low pressure warning sign" for a line about Mars pressure — no Mars anchor, applies to any topic
+   - GOOD: "Mars atmosphere thin diagram" or "Mars surface pressure gauge" — anchor maintained
+   - Exception: lines stating a universal principle that does NOT mention the topic subject may omit the anchor (e.g. a line about Earth's general atmospheric pressure that never says "Mars").
+11. image_keyword must directly depict the subject of THAT specific line. Re-read each line and ask: would a photo matching this keyword make sense playing under this exact sentence? If the keyword contains any banned adjective (see rule 7), rewrite it.
+12. image_keyword_fallback: a broader, safer version of the keyword. For space: just the object name ("saturn", "black hole", "nebula"). For physics: the phenomenon ("lightning", "ice", "magnet"). Simpler is always safer — a correct image beats an empty search.
+13. Tone: clear, punchy, conversational — speak to a curious general audience, not a specialist. Short sentences hit harder than long ones. Avoid jargon unless you immediately explain it. NEVER use dashes, hyphens, or em dashes (-, --, —) anywhere in narration lines or the title. Replace with commas or split into separate sentences.
+14. End with a short, memorable closing line — a surprising scale, an open question, or a thought that sticks. No call to subscribe. NEVER end with "So the next time you...", "Now you know...", "Isn't that amazing?", or any call-to-action phrasing.
+15. Write ORIGINAL narration in your own words. Do not copy source material directly — write as spoken narration.
+16. HIGHLIGHT TERMS: Include a "highlight_terms" array listing 1-4 scientific or technical words actually used in the script that a general audience might not know. These will appear yellow in subtitles. Only include words that appear verbatim in the lines.
+17. SEO FIELDS: Include:
     - "yt_description": 2-3 sentences that naturally mention the topic, the surprising fact, and why it matters. Write like a human, not a keyword list. No hashtags here.
     - "yt_tags": exactly 15 tags that cover all three layers:
         BROAD (4 tags): terms millions search — "science facts", "did you know", "how does it work", "science explained"
