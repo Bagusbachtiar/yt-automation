@@ -104,6 +104,18 @@ def commons_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str]:
 
 _STOP = {"the", "a", "an", "of", "in", "at", "to", "for", "and", "or", "is", "was", "by"}
 
+# Generic first-word modifiers that do NOT distinguish an animal from others in the same family.
+# When the first word of a 2+-word animal name is in this set, require only the last word in
+# Pexels/Pixabay searches (e.g. "Red Fox" → require "fox", not "red fox").
+# When NOT in this set, require both words (e.g. "Harpy Eagle" → require ["harpy","eagle"]).
+_GENERIC_FIRST = frozenset({
+    "white","red","blue","black","brown","gray","grey","green","yellow","orange","golden","silver",
+    "great","greater","giant","large","big","small","little","lesser","common","dwarf","long","short",
+    "american","african","asian","european","australian",
+    "eastern","western","northern","southern","north","south","east","west",
+    "spotted","striped","horned","tailed","ringed",
+})
+
 # Food/commercial context suppression — applied to Pexels alt text and Pixabay tags.
 # Catches food-fish problem: tuna/salmon results dominated by sushi plates and market counters.
 # Only applied when the image keyword and script line text don't signal a fishing/industry topic
@@ -511,7 +523,7 @@ def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
     # Science topics are question-phrased ("How auroras happen") — term filtering
     # would key on "happen", killing all results. Skip for science; query handles relevance.
     is_science = channel == "science"
-    words = animal.lower().split() if animal else []
+    words = re.split(r'[\s\-]+', animal.lower()) if animal else []
     if is_science:
         # Build require_terms from the image_keyword itself so multi-word descriptive
         # phrases don't pull clips that match only one generic word ("surface", "tracks").
@@ -524,10 +536,10 @@ def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
             require_terms = []
     elif len(words) == 1:
         require_terms = words
-    else:
-        # 2+-word: last word only — first words are usually color/modifier ("White", "Great")
-        # that stock URLs/filenames rarely include, killing valid results
+    elif words[0] in _GENERIC_FIRST:
         require_terms = [words[-1]]
+    else:
+        require_terms = [words[0], words[-1]]
 
     # Suppress food/commercial imagery (sushi, fillet, plate…) unless the keyword or
     # line text signals that fishing/industry context is intentional (overfishing lines,
@@ -619,7 +631,8 @@ def main():
             _req   = [_words[0]] if _words else []
         else:
             _vid_q = animal_global
-            _req   = [animal_global.lower().split()[-1]]
+            _awords = re.split(r'[\s\-]+', animal_global.lower())
+            _req = [_awords[0], _awords[-1]] if len(_awords) >= 2 and _awords[0] not in _GENERIC_FIRST else [_awords[-1]]
         global_vids = pexels_video_search(_vid_q, pexels_key, limit=20,
                                           require_terms=_req, exclude_terms=_FOOD_SIGNALS) or []
         print(f"Global video pool: {len(global_vids)} clips for '{_vid_q}'\n")
