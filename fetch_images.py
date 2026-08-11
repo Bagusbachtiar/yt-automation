@@ -607,15 +607,22 @@ def main():
     all_candidates = {}
     used_wiki = set()
 
-    # Fetch a global video pool for the animal once (per-line keywords are too narrow for video)
+    # Fetch a global video pool once — per-line keywords are too narrow for video
     global_vids = []
     animal_global = script.get("animal") or script.get("topic", "")
     is_science_global = channel == "science"
-    if pexels_key and animal_global and not is_science_global:
-        _req = [animal_global.lower().split()[-1]]
-        global_vids = pexels_video_search(animal_global, pexels_key, limit=20,
+    if pexels_key and animal_global:
+        if is_science_global:
+            from coverage_check import _strip_question, _SCI_STOP
+            _vid_q = _strip_question(animal_global)
+            _words = [w for w in _vid_q.split() if w not in _SCI_STOP and len(w) > 2]
+            _req   = [_words[0]] if _words else []
+        else:
+            _vid_q = animal_global
+            _req   = [animal_global.lower().split()[-1]]
+        global_vids = pexels_video_search(_vid_q, pexels_key, limit=20,
                                           require_terms=_req, exclude_terms=_FOOD_SIGNALS) or []
-        print(f"Global video pool: {len(global_vids)} clips for '{animal_global}'\n")
+        print(f"Global video pool: {len(global_vids)} clips for '{_vid_q}'\n")
 
     for idx, line in enumerate(lines):
         lid = line["id"]

@@ -837,15 +837,12 @@ class S1_Animal(Base):
                 cov        = check_coverage(a, channel=self.app.channel)
                 video_tier = cov.get("video_tier", "red")
                 video      = cov.get("video", 0)
-                is_sci     = self.app.channel == "science"
-                # Dot color: science uses photo tier (NASA/Commons); fauna uses video tier
-                dot_tier   = cov["tier"] if is_sci else video_tier
+                dot_tier   = video_tier
                 tiers = _load_tiers(self.app.channel)
                 tiers[a] = dot_tier
                 _save_tiers(tiers, self.app.channel)
 
-                # Science uses NASA/Commons images — video coverage warning not applicable
-                thin_video = (not is_sci) and (video_tier != "green")
+                thin_video = video_tier != "green"
                 if thin_video:
                     color      = "#ff5544" if video_tier == "red" else "#ffee44"
                     video_line = f"  Video: {video:,} Pexels clips  (tier: {video_tier})"
@@ -912,9 +909,7 @@ class S1_Animal(Base):
                         self.after(0, lambda d=done[0], t=total: self._disc_lbl.configure(
                             text=f"Checking coverage… {d}/{t}", text_color="#666688"))
 
-                # Science: filter on photo tier (NASA/Commons) — portrait Pexels videos are rare
-                # for abstract topics and not the primary source. Fauna: filter on video tier.
-                _qual = (lambda r: r["tier"]) if ch == "science" else (lambda r: r.get("video_tier", r["tier"]))
+                _qual = lambda r: r.get("video_tier", r["tier"])
                 good    = [r for r in results if _qual(r) != "red"]
                 skipped = len(results) - len(good)
                 good.sort(key=lambda r: ({"green": 0, "yellow": 1}[_qual(r)],
@@ -930,7 +925,7 @@ class S1_Animal(Base):
                         topics.append((r["animal"], False))
                         existing.add(r["animal"].lower())
                         added += 1
-                    tiers[r["animal"]] = _qual(r)  # photo tier for science, video tier for fauna
+                    tiers[r["animal"]] = _qual(r)
                 _save_topics(topics, ch)
                 _save_tiers(tiers, ch)
 
