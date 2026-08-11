@@ -16,6 +16,7 @@ import urllib.parse
 from pathlib import Path
 
 from wikipedia_fetch import fetch_wikipedia_text, fetch_eol_text, fetch_gbif_species_text
+from coverage_check import _load_pexels_key, _pexels_photo_count, _commons_count, _nasa_count
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma2:9b"
@@ -145,6 +146,69 @@ def extract_json(text: str) -> dict:
         return json.loads(m.group())
     except json.JSONDecodeError as e:
         sys.exit(f"[ERROR] JSON parse failed: {e}\nRaw:\n{m.group()[:600]}")
+
+
+def _validate_keywords(lines: list, topic: str, channel: str, topic_type: str) -> list:
+    """Check each line's image_keyword; rewrite (line + keyword) together when result count is 0."""
+    is_sci = channel == "science"
+    pexels_key = _load_pexels_key()
+    thin = []
+
+    for i, ln in enumerate(lines):
+        kw = ln.get("image_keyword", "").strip()
+        if not kw:
+            thin.append(i)
+            continue
+        count = 0
+        try:
+            if is_sci:
+                count = _commons_count(kw)
+                if count == 0 and topic_type == "space":
+                    count = _nasa_count(kw)
+            elif pexels_key:
+                count = _pexels_photo_count(kw, pexels_key)
+        except Exception:
+            pass
+        if count == 0:
+            thin.append(i)
+
+    if not thin:
+        print("  [keyword-repair] all keywords valid")
+        return lines
+
+    print(f"  [keyword-repair] thin at line(s) {[lines[i]['id'] for i in thin]} — rewriting...")
+    full_ctx = "\n".join(f"  {ln['id']}. {ln['text']}" for ln in lines)
+
+    for i in thin:
+        ln = lines[i]
+        prompt = (
+            f"TOPIC: {topic}\n\n"
+            f"FULL SCRIPT:\n{full_ctx}\n\n"
+            f"LINE {ln['id']} has an image keyword that returns 0 results on stock photo sites:\n"
+            f'  text: "{ln["text"]}"\n'
+            f'  image_keyword: "{ln.get("image_keyword", "")}"\n\n'
+            "Rewrite BOTH text and image_keyword. Rules:\n"
+            "- Keep the same scientific or animal fact\n"
+            "- image_keyword must return real results on Pexels or Wikimedia Commons\n"
+            "- Use a concrete, visually specific phrase; prefer proper nouns or scientific names\n"
+            "- Do not repeat or contradict adjacent lines\n"
+            "- No em dashes\n\n"
+            'Return ONLY valid JSON: {"text": "...", "image_keyword": "..."}'
+        )
+        raw = call_ollama(prompt, num_predict=300)
+        try:
+            m = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
+            if m:
+                fix = json.loads(m.group())
+                if fix.get("text") and fix.get("image_keyword"):
+                    old_kw = ln.get("image_keyword", "")
+                    lines[i]["text"] = fix["text"].replace("—", ",").replace(" ,", ",")
+                    lines[i]["image_keyword"] = fix["image_keyword"]
+                    print(f"    Line {ln['id']}: '{old_kw}' → '{fix['image_keyword']}'")
+        except Exception as e:
+            print(f"    [WARN] repair failed line {ln['id']}: {e}")
+
+    return lines
 
 
 def main():
@@ -280,6 +344,12 @@ def main():
         ln["text"] = ln["text"].replace("—", ",").replace(" ,", ",")
     if "title" in script:
         script["title"] = script["title"].replace("—", ",").replace(" ,", ",")
+
+    # Validate and repair thin keywords (always for science; for fauna only repairs lines at 0)
+    print("Validating image keywords...")
+    topic_type_val = classify_topic(topic) if is_science else "general"
+    lines = _validate_keywords(lines, topic, channel, topic_type_val)
+    script["lines"] = lines
 
     script["wiki_title"] = wiki_title
     if is_science:

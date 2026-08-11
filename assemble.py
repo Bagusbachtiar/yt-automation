@@ -38,6 +38,7 @@ CAPTION_MARGIN_V = 260
 ZOOM_SPEED = 0.0015
 MAX_ZOOM = 1.5
 CAPTION_OFFSET_SECS = 0.15  # shift captions later to match actual speech onset
+WORDS_PER_CHUNK = 4         # max words per caption chunk
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_JSON  = Path("script.json")
@@ -80,35 +81,27 @@ def find_file(directory: Path, stem: str, exts) -> Optional[Path]:
     return None
 
 
-def load_whisper():
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError:
-        sys.exit("[ERROR] faster-whisper not installed. Run: pip install faster-whisper")
-    print("Loading Whisper model...")
-    model = WhisperModel("small", device="cpu", compute_type="int8")
-    print("Whisper ready.\n")
-    return model
-
-
-def extract_audio(video: Path, out: Path):
-    """Extract audio from video to WAV for Whisper."""
-    cmd = ["ffmpeg", "-y", "-i", str(video), "-vn", "-acodec", "pcm_s16le", str(out)]
-    result = subprocess.run(cmd, capture_output=True, text=True, creationflags=_CNW)
-    if result.returncode != 0:
-        raise RuntimeError("Audio extraction failed")
-
-
-def transcribe_words(model, audio: Path, initial_prompt: str = "") -> list:
-    """Return [(word, start_sec, end_sec), ...] from audio file."""
-    segments, _ = model.transcribe(str(audio), word_timestamps=True, initial_prompt=initial_prompt)
-    words = []
-    for seg in segments:
-        for w in (seg.words or []):
-            word = w.word.strip().replace(',', '').replace('.', '').strip('-')
-            if word:
-                words.append((w.start, w.end, word))
-    return words
+def build_chunk_captions(entries: list) -> list:
+    """
+    Caption events from character-proportional chunking — no Whisper needed.
+    Each line's audio duration is split across WORDS_PER_CHUNK-word chunks by character ratio.
+    Timeline formula: t_start[N] = sum(dur[0..N-1]) + N * SEGMENT_PAD_SECS
+    """
+    events = []
+    t = 0.0
+    for _lid, text, _media, _audio, duration, _is_video in entries:
+        words = text.split()
+        chunks = [words[i:i + WORDS_PER_CHUNK] for i in range(0, len(words), WORDS_PER_CHUNK)]
+        if chunks:
+            total_chars = sum(len(" ".join(c)) for c in chunks) or 1
+            chunk_t = t
+            for chunk in chunks:
+                chunk_text = " ".join(chunk)
+                chunk_dur = (len(chunk_text) / total_chars) * duration
+                events.append((chunk_t, chunk_t + chunk_dur, chunk_text))
+                chunk_t += chunk_dur
+        t += duration + SEGMENT_PAD_SECS
+    return events
 
 
 def format_ass_time(seconds: float) -> str:
@@ -404,14 +397,8 @@ def main():
     print(f"\nConcatenating {len(segments)} segments with {CROSSFADE_SECS}s crossfades...")
     concat_segments(segments, TMP_CONCAT)
 
-    print("Transcribing word timestamps from final audio...")
-    tmp_audio = Path("tmp_audio.wav")
-    extract_audio(TMP_CONCAT, tmp_audio)
-    whisper = load_whisper()
-    word_events = transcribe_words(whisper, tmp_audio, " ".join(l["text"] for l in lines))
-    tmp_audio.unlink(missing_ok=True)
-
-    print("Burning captions...")
+    print("Building captions...")
+    word_events = build_chunk_captions(entries)
     build_ass(word_events, highlight_terms)
     burn_captions(TMP_CONCAT, CAPTIONS_ASS, OUTPUT)
 
