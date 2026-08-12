@@ -120,6 +120,64 @@ def fetch_wikipedia_images(title: str, limit: int = 30) -> list[str]:
     return results
 
 
+def fetch_wikipedia_images_with_captions(title: str, limit: int = 30) -> list[dict]:
+    """Like fetch_wikipedia_images but returns [{"url": ..., "caption": ...}] dicts.
+    Caption sourced from Commons extmetadata ObjectName, falling back to cleaned filename."""
+    params = urllib.parse.urlencode({
+        "action": "query",
+        "prop": "images",
+        "titles": title,
+        "imlimit": 50,
+        "format": "json",
+    })
+    data = json.loads(_get(f"{WIKI_API}?{params}"))
+    pages = data.get("query", {}).get("pages", {})
+    page = next(iter(pages.values()))
+    filenames = [
+        img["title"] for img in page.get("images", [])
+        if any(img["title"].lower().endswith(ext) for ext in _IMG_EXTS)
+    ]
+    if not filenames:
+        return []
+
+    results = []
+    for i in range(0, len(filenames), 50):
+        batch = filenames[i:i + 50]
+        params = urllib.parse.urlencode({
+            "action": "query",
+            "titles": "|".join(batch),
+            "prop": "imageinfo",
+            "iiprop": "url|extmetadata",
+            "iiurlwidth": 1080,
+            "iiextmetadatafilter": "LicenseShortName|ObjectName|ImageDescription",
+            "format": "json",
+        })
+        data = json.loads(_get(f"{COMMONS_API}?{params}"))
+        for pg in data.get("query", {}).get("pages", {}).values():
+            info = (pg.get("imageinfo") or [{}])[0]
+            try:
+                license_str = (info.get("extmetadata", {})
+                                   .get("LicenseShortName", {})
+                                   .get("value", ""))
+            except AttributeError:
+                license_str = ""
+            if not is_acceptable_license(license_str):
+                continue
+            img_url = info.get("thumburl") or info.get("url", "")
+            if not img_url or not any(img_url.lower().split("?")[0].endswith(ext) for ext in _IMG_EXTS):
+                continue
+            meta = info.get("extmetadata", {})
+            obj_name = (meta.get("ObjectName") or {}).get("value", "")
+            raw_desc = (meta.get("ImageDescription") or {}).get("value", "")
+            desc = re.sub(r"<[^>]+>", "", raw_desc).strip()[:80]
+            page_title = pg.get("title", "").replace("File:", "").rsplit(".", 1)[0].replace("_", " ")
+            caption = obj_name or desc or page_title
+            results.append({"url": img_url, "caption": caption})
+            if len(results) >= limit:
+                return results
+    return results
+
+
 def fetch_wikipedia_pageimage(title: str) -> str | None:
     """Return the URL of the article's representative image (infobox photo)."""
     params = urllib.parse.urlencode({

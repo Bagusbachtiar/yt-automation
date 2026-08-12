@@ -22,6 +22,7 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma2:9b"
 PROMPT_TEMPLATE          = Path("script_prompt_template.txt")
 PROMPT_TEMPLATE_SCIENCE  = Path("script_prompt_template_science.txt")
+PROMPT_TEMPLATE_MYTHOLOGY = Path("script_prompt_template_mythology.txt")
 SCRIPT_JSON = Path("script.json")
 
 MAX_WIKI_CHARS = 4000
@@ -150,7 +151,7 @@ def extract_json(text: str) -> dict:
 
 def _validate_keywords(lines: list, topic: str, channel: str, topic_type: str) -> list:
     """Check each line's image_keyword; rewrite (line + keyword) together when result count is 0."""
-    is_sci = channel == "science"
+    is_sci = channel in ("science", "mythology")
     pexels_key = _load_pexels_key()
     thin = []
 
@@ -226,8 +227,14 @@ def main():
     if args.title:
         print(f"Title:   {args.title}")
 
-    is_science = channel == "science"
-    template_path = PROMPT_TEMPLATE_SCIENCE if is_science else PROMPT_TEMPLATE
+    is_science  = channel == "science"
+    is_mythology = channel == "mythology"
+    if is_science:
+        template_path = PROMPT_TEMPLATE_SCIENCE
+    elif is_mythology:
+        template_path = PROMPT_TEMPLATE_MYTHOLOGY
+    else:
+        template_path = PROMPT_TEMPLATE
     if not template_path.exists():
         sys.exit(f"[ERROR] {template_path} not found.")
 
@@ -248,6 +255,18 @@ def main():
     _wiki_words  = set(wiki_title.lower().split())
     # prefix match handles plurals: "rainbows"/"rainbow", "earthquakes"/"earthquake"
     _matched = any(tw.startswith(ww) or ww.startswith(tw) for tw in _topic_words for ww in _wiki_words)
+    if _matched:
+        # Secondary check: wiki title may be a named concept (e.g. "Blue Ocean Strategy") whose
+        # words happen to overlap the topic ("ocean"). If wiki title has extra words that are
+        # concept-domain suffixes and those words aren't in the topic, reject.
+        _CONCEPT_SUFFIXES = {"strategy","theory","effect","law","paradox","principle","model",
+                             "method","framework","theorem","hypothesis","syndrome","fallacy",
+                             "conjecture","protocol","algorithm","concept","approach"}
+        _wiki_extra = {w for w in _wiki_words if w not in _topic_words and w not in _WIKI_STOP and len(w) > 3}
+        _false_concept = _wiki_extra & _CONCEPT_SUFFIXES
+        if _false_concept:
+            print(f"  [WARN] Wikipedia title '{wiki_title}' is a named concept ({_false_concept}) not matching topic — skipping grounding")
+            _matched = False
     if not _matched:
         print(f"  [WARN] Wikipedia title '{wiki_title}' doesn't match topic — skipping grounding")
         wiki_text = ""
@@ -275,7 +294,7 @@ def main():
                 reference += f"\n\n[Perenual Plant Database]\n{perenual_text[:2000]}"
             else:
                 print("Perenual: no data (key missing or not found)")
-    else:
+    elif not is_mythology:
         print("Fetching EOL species data...")
         eol_name, eol_text = fetch_eol_text(topic)
         if eol_text:
@@ -295,7 +314,7 @@ def main():
     template = template_path.read_text(encoding="utf-8")
     direction_hint = ""
     if args.title:
-        subject_word = "topic" if is_science else "animal"
+        subject_word = "myth" if is_mythology else ("topic" if is_science else "animal")
         direction_hint = (
             f"\nCONTENT DIRECTION: The title for this video has already been chosen: \"{content_topic}\". "
             f"Every line in your script MUST support and be consistent with what this title promises. "
@@ -312,7 +331,7 @@ def main():
         if attempt > 1:
             print(f"Retrying ({attempt}/{MAX_RETRIES})...")
         print(f"Calling Ollama ({OLLAMA_MODEL})...")
-        raw = call_ollama(active_prompt, num_predict=5000 if is_science else 3500)
+        raw = call_ollama(active_prompt, num_predict=5000 if (is_science or is_mythology) else 3500)
         try:
             m = re.search(r'\{.*\}', raw, re.DOTALL)
             if not m:
@@ -352,7 +371,7 @@ def main():
     script["lines"] = lines
 
     script["wiki_title"] = wiki_title
-    if is_science:
+    if is_science or is_mythology:
         script["topic"] = topic
     else:
         script["animal"] = topic

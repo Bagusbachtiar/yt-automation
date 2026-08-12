@@ -36,6 +36,7 @@ _SSL.verify_mode    = ssl.CERT_NONE
 _SRC_ORDER = {
     "faunaworks": ["pexels_video","wiki_infobox","wikipedia","pexels","pixabay","inaturalist","gbif","commons","openverse","flickr","wiki_keyword"],
     "science":    ["pexels_video","nasa","wiki_infobox","wikipedia","commons","openverse","pexels","pixabay","wiki_keyword"],
+    "mythology":  ["wiki_infobox","wikipedia","commons","openverse","wiki_keyword"],
 }
 SRC_ORDER = _SRC_ORDER["faunaworks"]   # default for any legacy callers
 _VID      = {"pexels_video"}
@@ -251,6 +252,28 @@ def brainstorm_topics(theme: str, count: int = 25) -> list[str]:
         return []
 
 
+def brainstorm_myths(theme: str, count: int = 25) -> list[str]:
+    raw = _ollama(
+        f"Generate a list of {count} specific myths, legends, or folklore stories that fit this theme: {theme}\n\n"
+        f"RULES:\n"
+        f"- Return ONLY a JSON array of myth/story names, no explanation\n"
+        f"- Use the name of the specific myth or character: 'Prometheus and the Fire', 'Medusa', 'Pandoras Box', 'Orpheus and Eurydice'\n"
+        f"- Include Greek, Norse, Egyptian, Celtic, and world mythology — mix cultures\n"
+        f"- Prefer well-known myths with rich narrative and strong visual elements\n"
+        f"- No modern stories, no fan fiction, no contested history — classical myths and folklore only\n"
+        f'Return ONLY: ["Myth 1", "Myth 2", ...]',
+        tokens=900,
+    )
+    m = re.search(r'\[.*?\]', raw, re.DOTALL)
+    if not m:
+        return []
+    try:
+        cleaned = re.sub(r',(\s*[\]}])', r'\1', m.group())
+        return [a for a in json.loads(cleaned) if isinstance(a, str)][:count]
+    except Exception:
+        return []
+
+
 def brainstorm_animals(theme: str, count: int = 25) -> list[str]:
     raw = _ollama(
         f"Generate a list of {count} specific animal species that fit this theme: {theme}\n\n"
@@ -273,13 +296,14 @@ def brainstorm_animals(theme: str, count: int = 25) -> list[str]:
 
 
 def _extract(src: str, entry) -> tuple:
-    """Return (url, thumb) from a candidates entry."""
+    """Return (url, thumb, caption) from a candidates entry."""
     if isinstance(entry, dict):
-        url   = entry.get("url", "")
-        thumb = entry.get("thumb")
+        url     = entry.get("url", "")
+        thumb   = entry.get("thumb")
+        caption = entry.get("caption", "")
     else:
-        url, thumb = entry, None
-    return url, thumb
+        url, thumb, caption = entry, None, ""
+    return url, thumb, caption
 
 
 def pool_from(candidates: dict, src_order: list | None = None) -> list:
@@ -288,11 +312,11 @@ def pool_from(candidates: dict, src_order: list | None = None) -> list:
     def _take_one(data: dict, sources: list) -> bool:
         for src in sources:
             for entry in data["sources"].get(src, []):
-                url, thumb = _extract(src, entry)
+                url, thumb, caption = _extract(src, entry)
                 if src in _VID and not thumb:
                     continue
                 if url and url not in seen:
-                    seen.add(url); pool.append((src, url, thumb)); return True
+                    seen.add(url); pool.append((src, url, thumb, caption)); return True
         return False
 
     _order = src_order or SRC_ORDER
@@ -310,10 +334,10 @@ def pool_from(candidates: dict, src_order: list | None = None) -> list:
         if len(pool) >= MAX_POOL: break
         for data in candidates.values():
             for entry in data["sources"].get(src, []):
-                url, thumb = _extract(src, entry)
+                url, thumb, caption = _extract(src, entry)
                 if src in _VID and not thumb: continue
                 if url and url not in seen:
-                    seen.add(url); pool.append((src, url, thumb))
+                    seen.add(url); pool.append((src, url, thumb, caption))
                     if len(pool) >= MAX_POOL: break
             if len(pool) >= MAX_POOL: break
 
@@ -488,11 +512,15 @@ class S1_Animal(Base):
         ch_key = next((k for k, v in channels.items() if v == cur_ch_name), self.app.channel)
         threading.Thread(target=self._fetch_s1_ch_info, args=(ch_key,), daemon=True).start()
 
-        _is_sci = getattr(self.app, "channel", "faunaworks") == "science"
-        _h1(p, "What topic?" if _is_sci else "What animal?")
-        _sub(p, "Type any science topic — AI finds the best angle" if _is_sci
-             else "Type any animal — AI finds the best angle")
-        self._e = ctk.CTkEntry(p, placeholder_text="e.g. why ice floats" if _is_sci else "e.g. elephant",
+        _ch_s1 = getattr(self.app, "channel", "faunaworks")
+        _is_sci = _ch_s1 == "science"
+        _is_myth = _ch_s1 == "mythology"
+        _h1(p, "What topic?" if _is_sci else ("What myth?" if _is_myth else "What animal?"))
+        _sub(p, ("Type any science topic — AI finds the best angle" if _is_sci
+                 else ("Type any myth or legend — AI finds the best angle" if _is_myth
+                       else "Type any animal — AI finds the best angle")))
+        _ph = "e.g. why ice floats" if _is_sci else ("e.g. Prometheus" if _is_myth else "e.g. elephant")
+        self._e = ctk.CTkEntry(p, placeholder_text=_ph,
                                width=320, font=("Arial", 15), height=42)
         self._e.pack(pady=(16, 8))
         if getattr(self.app, "animal", ""):
@@ -844,8 +872,11 @@ class S1_Animal(Base):
 
                 thin_video = video_tier != "green"
                 if thin_video:
-                    color      = "#ff5544" if video_tier == "red" else "#ffee44"
-                    video_line = f"  Video: {video:,} Pexels clips  (tier: {video_tier})"
+                    color = "#ff5544" if video_tier == "red" else "#ffee44"
+                    if self.app.channel == "mythology":
+                        video_line = f"  Commons images: {cov.get('commons', 0):,} files  (tier: {video_tier})"
+                    else:
+                        video_line = f"  Video: {video:,} Pexels clips  (tier: {video_tier})"
                     msg = (
                         f"Coverage for '{a}':\n{video_line}\n\n"
                         "thin video coverage = mostly static images in final video"
@@ -885,8 +916,12 @@ class S1_Animal(Base):
 
         def run():
             try:
-                animals = (brainstorm_topics(theme, count=30) if self.app.channel == "science"
-                           else brainstorm_animals(theme, count=30))
+                if self.app.channel == "science":
+                    animals = brainstorm_topics(theme, count=30)
+                elif self.app.channel == "mythology":
+                    animals = brainstorm_myths(theme, count=30)
+                else:
+                    animals = brainstorm_animals(theme, count=30)
                 if not animals:
                     self.after(0, lambda: (
                         self._disc_lbl.configure(text="No animals returned — try rephrasing", text_color="#ff5555"),
@@ -950,11 +985,12 @@ class S2_Titles(Base):
     def on_enter(self):
         p = self._reset()
         _h1(p, "Pick a title")
-        _is_sci = getattr(self.app, "channel", "faunaworks") == "science"
-        _sub(p, f"{'Topic' if _is_sci else 'Animal'}: {self.app.animal}")
-        # Science: prepend raw topic as first option (already a good title as-is)
+        _ch = getattr(self.app, "channel", "faunaworks")
+        _label = {"science": "Topic", "mythology": "Myth"}.get(_ch, "Animal")
+        _sub(p, f"{_label}: {self.app.animal}")
+        # Science/mythology: prepend raw topic as first option (already a good title as-is)
         display_titles = self.app.titles[:]
-        if _is_sci:
+        if _ch in ("science", "mythology"):
             topic = self.app.animal
             if topic not in display_titles:
                 display_titles.insert(0, topic)
@@ -1195,7 +1231,7 @@ class S4_Images(Base):
             self.app.pool = pool
 
             items = []
-            for idx, (src, url, thumb) in enumerate(pool):
+            for idx, (src, url, thumb, caption) in enumerate(pool):
                 preview = thumb if thumb else url
                 self.after(0, lambda n=idx+1, t=len(pool):
                            self._stlbl.configure(text=f"Loading thumbnails {n}/{t}…"))
@@ -1203,7 +1239,7 @@ class S4_Images(Base):
                     data = fetch_bytes(preview)
                     img  = Image.open(io.BytesIO(data)).convert("RGB")
                     img.thumbnail((TW, TH))
-                    items.append((idx, src, img))
+                    items.append((idx, src, img, caption))
                 except Exception:
                     pass  # skip bad thumbnails
 
@@ -1223,7 +1259,7 @@ class S4_Images(Base):
         cols = self._cols_for_width()
         self._cur_cols = cols
 
-        for idx, src, img in items:
+        for idx, src, img, caption in items:
             ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(TW, TH))
             self._thumbs.append(ctk_img)
             self._thumb_imgs[idx] = (ctk_img, img)  # img kept for preview rescale
@@ -1239,7 +1275,12 @@ class S4_Images(Base):
             btn.bind("<Double-Button-1>", lambda e, i=idx: self._open_preview(i))
             lbl = ctk.CTkLabel(cell, text=f"#{idx+1}{'  [VID]' if is_v else ''}",
                                font=("Arial", 10), text_color="#aaaaaa")
-            lbl.pack(pady=(0, 4))
+            lbl.pack(pady=(0, 2 if caption else 4))
+            if caption:
+                cap_text = caption[:55] + "…" if len(caption) > 55 else caption
+                cap_lbl = ctk.CTkLabel(cell, text=cap_text, font=("Arial", 8),
+                                       text_color="#555577", wraplength=TW - 8)
+                cap_lbl.pack(pady=(0, 4))
             self._cells[idx] = (cell, lbl)
 
         self._set_col_weights(cols)
@@ -1306,7 +1347,7 @@ class S4_Images(Base):
             self._appbtn.configure(state="normal")
 
     def _open_preview(self, idx: int):
-        src, url, thumb = self.app.pool[idx]
+        src, url, thumb, caption = self.app.pool[idx]
         is_v = src in _VID
 
         win = ctk.CTkToplevel(self)
@@ -1428,6 +1469,9 @@ class S4_Images(Base):
 
             threading.Thread(target=_load_image, daemon=True).start()
 
+        if caption:
+            ctk.CTkLabel(win, text=caption, font=("Arial", 10), text_color="#8888aa",
+                         wraplength=480, justify="center").pack(padx=12, pady=(0, 4))
         ctk.CTkButton(win, text="Close", fg_color="#444", command=win.destroy).pack(pady=6)
 
     def _refresh_visuals(self):
@@ -1458,7 +1502,7 @@ class S4_Images(Base):
                 for f in IMAGES_DIR.iterdir():
                     f.unlink()
                 for lid, idx in self.app.assigned.items():
-                    src, url, _ = self.app.pool[idx]
+                    src, url, _, _cap = self.app.pool[idx]
                     ext  = ".mp4" if src in _VID else ".jpg"
                     data = fetch_bytes(url)
                     (IMAGES_DIR / f"{lid}{ext}").write_bytes(data)

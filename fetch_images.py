@@ -21,8 +21,8 @@ import urllib.parse
 import urllib.error
 from pathlib import Path
 
-from wikipedia_fetch import (fetch_wikipedia_images, fetch_wikipedia_pageimage,
-                             is_acceptable_license, search_wikipedia)
+from wikipedia_fetch import (fetch_wikipedia_images, fetch_wikipedia_images_with_captions,
+                             fetch_wikipedia_pageimage, is_acceptable_license, search_wikipedia)
 
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
@@ -516,10 +516,111 @@ def openverse_search(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[str
         return []
 
 
+def commons_search_with_captions(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[dict]:
+    """Like commons_search but returns [{"url": ..., "caption": ...}] for mythology channel."""
+    try:
+        params = urllib.parse.urlencode({
+            "action": "query",
+            "generator": "search",
+            "gsrsearch": query,
+            "gsrnamespace": 6,
+            "gsrlimit": limit * 3,
+            "prop": "imageinfo",
+            "iiprop": "url|extmetadata",
+            "iiurlwidth": 1080,
+            "iiextmetadatafilter": "LicenseShortName|ObjectName|ImageDescription",
+            "format": "json",
+        })
+        req = urllib.request.Request(
+            f"{COMMONS_API}?{params}",
+            headers={"User-Agent": "yt-automation/1.0 (bagusbachtiar50@gmail.com)"},
+        )
+        with urllib.request.urlopen(req, timeout=10, context=_SSL_CTX) as resp:
+            data = json.loads(resp.read())
+        pages = data.get("query", {}).get("pages", {})
+        results = []
+        for page in pages.values():
+            info = (page.get("imageinfo") or [{}])[0]
+            license_str = (info.get("extmetadata", {})
+                               .get("LicenseShortName", {})
+                               .get("value", ""))
+            img_url = info.get("thumburl") or info.get("url", "")
+            if not img_url or not any(img_url.lower().split("?")[0].endswith(ext) for ext in COMMONS_IMAGE_EXTS):
+                continue
+            if not is_acceptable_license(license_str):
+                continue
+            meta = info.get("extmetadata", {})
+            obj_name = (meta.get("ObjectName") or {}).get("value", "")
+            raw_desc = (meta.get("ImageDescription") or {}).get("value", "")
+            desc = re.sub(r"<[^>]+>", "", raw_desc).strip()[:80]
+            page_title = page.get("title", "").replace("File:", "").rsplit(".", 1)[0].replace("_", " ")
+            caption = obj_name or desc or page_title
+            results.append({"url": img_url, "caption": caption})
+            if len(results) >= limit:
+                break
+        return results
+    except Exception as e:
+        print(f"    [Commons+captions] error: {e}")
+    return []
+
+
+def openverse_search_with_captions(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[dict]:
+    """Like openverse_search but returns [{"url": ..., "caption": ...}] for mythology channel."""
+    params = urllib.parse.urlencode({
+        "q":            query,
+        "page_size":    min(limit * 3, 20),
+        "license_type": "commercial",
+    })
+    headers = {"User-Agent": "yt-automation/1.0 (bagusbachtiar50@gmail.com)"}
+    ov_key = os.environ.get("OPENVERSE_API_KEY", "").strip()
+    if ov_key:
+        headers["Authorization"] = f"Bearer {ov_key}"
+    try:
+        req = urllib.request.Request(f"https://api.openverse.org/v1/images/?{params}", headers=headers)
+        with urllib.request.urlopen(req, timeout=12, context=_SSL_CTX) as r:
+            data = json.loads(r.read())
+        results = []
+        for item in data.get("results", []):
+            url = item.get("url", "")
+            if not url:
+                continue
+            title   = item.get("title", "")
+            creator = item.get("creator", "")
+            caption = f"{title} — {creator}" if title and creator else title or creator
+            results.append({"url": url, "caption": caption})
+        return results[:limit]
+    except Exception as e:
+        print(f"    [Openverse+captions] error: {e}")
+        return []
+
+
+def wikipedia_keyword_search_with_captions(query: str, limit: int = CANDIDATES_PER_SOURCE) -> list[dict]:
+    """Like wikipedia_keyword_search but returns dicts with captions for mythology channel."""
+    title = search_wikipedia(query)
+    if not title or not _relevant_overlap(query, title):
+        return []
+    return fetch_wikipedia_images_with_captions(title, limit=limit)
+
+
 def fetch_candidates(query: str, pexels_key: str, pixabay_key: str,
-                     flickr_key: str = "", wiki_url: str | None = None,
-                     animal: str = "", line_text: str = "",
+                     flickr_key: str = "", wiki_url=None,
+                     wiki_caption: str = "", animal: str = "", line_text: str = "",
                      channel: str = "faunaworks") -> dict:
+    # Mythology: Wikipedia article images + Commons keyword search + Openverse only.
+    # No Pexels/Pixabay/iNat/GBIF/NASA — stock photo sites don't have classical art.
+    if channel == "mythology":
+        wiki_entry = ({"url": wiki_url, "caption": wiki_caption} if wiki_caption and wiki_url
+                      else ([wiki_url] if wiki_url else []))
+        wiki_cands = [wiki_entry] if wiki_entry else []
+        return {
+            "wikipedia":    wiki_cands,
+            "wiki_keyword": wikipedia_keyword_search_with_captions(query),
+            "commons":      commons_search_with_captions(query),
+            "openverse":    openverse_search_with_captions(query),
+            "flickr": [], "pexels": [], "pixabay": [], "inaturalist": [],
+            "gbif": [], "pexels_video": [], "nasa": [],
+        }
+
     # Science topics are question-phrased ("How auroras happen") — term filtering
     # would key on "happen", killing all results. Skip for science; query handles relevance.
     is_science = channel == "science"
@@ -596,7 +697,8 @@ def main():
     flickr_key  = os.environ.get("FLICKR_API_KEY",  "").strip()
     tg_token    = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 
-    if not pexels_key and not pixabay_key and not flickr_key:
+    is_mythology = channel == "mythology"
+    if not is_mythology and not pexels_key and not pixabay_key and not flickr_key:
         sys.exit("[ERROR] No API keys. Set PEXELS_API_KEY, PIXABAY_API_KEY, or FLICKR_API_KEY in .env")
     if not SCRIPT_JSON.exists():
         sys.exit(f"[ERROR] {SCRIPT_JSON} not found.")
@@ -605,13 +707,19 @@ def main():
     lines  = script["lines"]
     print(f"\nCollecting candidates for {len(lines)} lines...\n")
 
-    wiki_pool    = []
+    wiki_pool    = []      # list of URL strings (or dicts for mythology)
+    wiki_captions = {}    # url → caption str, populated for mythology only
     wiki_infobox = None
     wiki_title   = script.get("wiki_title", "")
     if wiki_title:
         print(f"Fetching Wikipedia images for '{wiki_title}'...")
-        wiki_infobox = fetch_wikipedia_pageimage(wiki_title)
-        wiki_pool    = fetch_wikipedia_images(wiki_title)
+        if is_mythology:
+            _entries = fetch_wikipedia_images_with_captions(wiki_title)
+            wiki_pool    = [e["url"] for e in _entries]
+            wiki_captions = {e["url"]: e.get("caption", "") for e in _entries}
+        else:
+            wiki_infobox = fetch_wikipedia_pageimage(wiki_title)
+            wiki_pool    = fetch_wikipedia_images(wiki_title)
         print(f"  infobox: {'found' if wiki_infobox else 'none'}  "
               f"article pool: {len(wiki_pool)} licensed images\n")
 
@@ -619,11 +727,12 @@ def main():
     all_candidates = {}
     used_wiki = set()
 
-    # Fetch a global video pool once — per-line keywords are too narrow for video
+    # Fetch a global video pool once — per-line keywords are too narrow for video.
+    # Mythology has no video source; skip.
     global_vids = []
     animal_global = script.get("animal") or script.get("topic", "")
     is_science_global = channel == "science"
-    if pexels_key and animal_global:
+    if pexels_key and animal_global and not is_mythology:
         if is_science_global:
             from coverage_check import _strip_question, _SCI_STOP
             _vid_q = _strip_question(animal_global)
@@ -645,15 +754,18 @@ def main():
             or line["text"]
         )
         fallback_keyword = line.get("image_keyword_fallback", "")
-        wiki_url = None
+        wiki_url     = None
+        wiki_caption_line = ""
         if wiki_pool:
             wiki_url = _best_wiki_match(keyword, wiki_pool, used_wiki)
             if wiki_url:
                 used_wiki.add(wiki_url)
+                wiki_caption_line = wiki_captions.get(wiki_url, "")
         animal = script.get("animal") or script.get("topic", "")
         print(f"  Line {lid:2d}: {keyword}")
         c = fetch_candidates(keyword, pexels_key, pixabay_key, flickr_key=flickr_key,
-                             wiki_url=wiki_url, animal=animal, line_text=line.get("text", ""),
+                             wiki_url=wiki_url, wiki_caption=wiki_caption_line,
+                             animal=animal, line_text=line.get("text", ""),
                              channel=channel)
         if global_vids:
             seen_gv = {e["url"] for e in c["pexels_video"] if isinstance(e, dict)}

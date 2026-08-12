@@ -137,13 +137,30 @@ def _pexels_photo_count(topic: str, api_key: str) -> int:
     ).get("total_results", 0)
 
 
+GREEN_MYTH  = 50   # >= this: good Commons art coverage for a myth/character
+YELLOW_MYTH = 10   # >= this: some coverage, workable
+
+
 def check_coverage(topic: str, channel: str = "faunaworks") -> dict:
     """
     Query sources appropriate for the channel and return coverage counts + tiers.
-    faunaworks: iNat + GBIF + Commons + Pexels video.
-    science:    NASA (if space topic) + Commons + Pexels photo + Pexels video.
+    faunaworks:  iNat + GBIF + Commons + Pexels video.
+    science:     NASA (if space topic) + Commons + Pexels photo + Pexels video.
+    mythology:   Commons only (artwork). video_tier reflects Commons art availability.
     """
     pexels_key = _load_pexels_key()
+
+    if channel == "mythology":
+        result = {"animal": topic, "inat": 0, "gbif": 0, "commons": 0, "video": 0}
+        try:
+            result["commons"] = _commons_count(topic)
+        except Exception:
+            pass
+        commons = result["commons"]
+        tier = "green" if commons >= GREEN_MYTH else "yellow" if commons >= YELLOW_MYTH else "red"
+        result["tier"] = tier
+        result["video_tier"] = tier  # no video; reuse Commons tier for dot color
+        return result
 
     if channel == "science":
         result = {"animal": topic, "inat": 0, "gbif": 0, "commons": 0, "video": 0, "nasa": 0}
