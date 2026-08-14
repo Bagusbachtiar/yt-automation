@@ -82,7 +82,7 @@ def get_credentials(channel: str):
             creds.refresh(Request())
         else:
             flow  = InstalledAppFlow.from_client_secrets_file(str(secrets), SCOPES)
-            creds = flow.run_local_server(port=0)
+            creds = flow.run_local_server(port=8765, timeout_seconds=300)
         token.write_text(creds.to_json(), encoding="utf-8")
 
     return creds
