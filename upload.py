@@ -216,6 +216,8 @@ def main():
     else:
         print("Upload complete!")
     print(f"URL: {vid_url}")
+    args.file.unlink(missing_ok=True)
+    print(f"Deleted local file: {args.file}")
 
 
 if __name__ == "__main__":
