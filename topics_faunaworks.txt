@@ -19,3 +19,11 @@ DONE: Capybara
 DONE: Leaf-cutter Ant
 DONE: Ladybug
 DONE: Camel
+DONE: White-tailed Deer
+DONE: Barred Owl
+DONE: American Black Bear
+DONE: Blue Whale
+DONE: Woodpecker
+DONE: Coral reef fish
+DONE: Crab
+DONE: Starfish
