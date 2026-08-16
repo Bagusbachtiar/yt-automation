@@ -5,6 +5,8 @@ Theme: {{TOPIC}}
 
 Pick 5 real animals that fit this theme. Prefer surprising, unusual, or extreme examples over obvious choices — the less predictable the better.
 
+ANIMAL SELECTION CONSTRAINT: Balance surprise factor with stock photo availability. Ultra-rare deep-sea species (sea spiders, barreleye fish, viperfish) often have near-zero professional stock photos and will produce poor video. Prefer animals that are BOTH surprising AND visually well-documented in wildlife photography — e.g. vampire squid, anglerfish, mantis shrimp, axolotl, pistol shrimp, mimic octopus, hagfish, blobfish, firefly squid. If you must include a rare species, flag it by setting image_keyword_fallback to a broader related term (see rule 6).
+
 STRICT RULES:
 1. Output ONLY valid JSON. No markdown code fences, no explanation text before or after, no trailing commas. Output must start with { and end with }.
 2. Write EXACTLY 2 narration lines per animal, for 10 lines total (ids 1-10).
@@ -22,6 +24,7 @@ STRICT RULES:
 6. image_keyword: ONLY the animal's common name, 1-3 words MAX. Both lines for the same animal MUST use the same keyword. These keywords go to stock photo/video sites — simple and common is best.
    GOOD: "blobfish", "axolotl", "mantis shrimp", "pistol shrimp"
    BAD: "sad looking deep sea fish", "pink salamander regenerating", "shrimp with claws"
+   image_keyword_fallback: For rare or deep-sea species with thin stock coverage, set a BROADER fallback term that a wildlife photographer would actually tag (e.g. "deep sea fish" for barreleye fish, "marine spider" for sea spider, "bioluminescent squid" for firefly squid). For common species, same as image_keyword is fine.
 7. HOMOGRAPH RULE: If the animal name is also a common English word or non-animal term, add a clarifying word: "bat animal", "crane bird", "hawk bird", "bear animal". Without this, stock sites return wrong results.
 8. Tone: punchy, conversational, short sentences. Speak to a curious general audience. NEVER use dashes, hyphens, or em dashes (-, --, —) in narration lines or the title. Replace with commas or split into separate sentences.
 9. CLOSING LINE (id 10): End with a memorable thought — a sense of scale, the most mind-bending implication, or a fact that makes the viewer reconsider something ordinary.

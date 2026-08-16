@@ -774,6 +774,18 @@ def main():
         if not c["wiki_keyword"] and fallback_keyword and fallback_keyword != keyword:
             print(f"    [fallback] no wiki match — trying: {fallback_keyword}")
             c["wiki_keyword"] = wikipedia_keyword_search(fallback_keyword)
+        # Pexels fallback: if primary keyword returns thin results, retry with fallback
+        if fallback_keyword and fallback_keyword != keyword and pexels_key:
+            if len(c["pexels"]) < 2:
+                fb = pexels_search(fallback_keyword, pexels_key, limit=CANDIDATES_PER_SOURCE)
+                if fb:
+                    print(f"    [pexels fallback] '{keyword}' thin ({len(c['pexels'])}) → '{fallback_keyword}': +{len(fb)}")
+                    c["pexels"] = c["pexels"] + fb
+            if len(c["pexels_video"]) < 2:
+                fb_v = pexels_video_search(fallback_keyword, pexels_key, limit=CANDIDATES_PER_SOURCE)
+                if fb_v:
+                    print(f"    [pexels_video fallback] '{keyword}' thin ({len(c['pexels_video'])}) → '{fallback_keyword}': +{len(fb_v)}")
+                    c["pexels_video"] = c["pexels_video"] + fb_v
         total = sum(len(v) for v in c.values())
         print(f"    wiki:{len(c['wikipedia'])}  wiki_kw:{len(c['wiki_keyword'])}  flickr:{len(c['flickr'])}  commons:{len(c['commons'])}  openverse:{len(c['openverse'])}  pexels:{len(c['pexels'])}  pixabay:{len(c['pixabay'])}  inat:{len(c['inaturalist'])}  gbif:{len(c['gbif'])}  pexels_vid:{len(c['pexels_video'])}  nasa:{len(c['nasa'])}  total:{total}")
         all_candidates[str(lid)] = {

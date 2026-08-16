@@ -1139,6 +1139,51 @@ class S2_Titles(Base):
                     )
                 self.app.script["title"] = title
                 SCRIPT_JSON.write_text(json.dumps(self.app.script, indent=2, ensure_ascii=False), encoding="utf-8")
+
+                # List mode: quick coverage check on the 5 animals the LLM picked
+                if _mode == "list":
+                    picked = [
+                        ln["image_keyword"]
+                        for ln in self.app.script.get("lines", [])
+                        if ln.get("id") in (1, 3, 5, 7, 9) and ln.get("image_keyword")
+                    ]
+                    if picked:
+                        self.after(0, lambda: self._lbl.configure(
+                            text="Checking coverage for picked animals…", text_color="#888888"))
+                        from coverage_check import check_coverage
+                        red = []
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+                            futs = {ex.submit(check_coverage, a, self.app.channel): a for a in picked}
+                            for fut in concurrent.futures.as_completed(futs):
+                                a = futs[fut]
+                                try:
+                                    if fut.result().get("video_tier", "red") == "red":
+                                        red.append(a)
+                                except Exception:
+                                    pass
+                        if red:
+                            msg = (
+                                "Thin stock coverage detected for:\n"
+                                + "\n".join(f"  • {a}" for a in red)
+                                + "\n\nThese animals may produce poor images in S4.\n"
+                                "Proceed anyway, or go back and try a different theme?"
+                            )
+                            proceed = [None]
+                            ev = threading.Event()
+                            def _ask_cov(m=msg):
+                                proceed[0] = tkinter.messagebox.askyesno("Coverage Warning", m)
+                                ev.set()
+                            self.after(0, _ask_cov)
+                            ev.wait()
+                            if not proceed[0]:
+                                self.after(0, lambda: (
+                                    self._lbl.configure(
+                                        text="Cancelled — go back to S1 and try a different theme",
+                                        text_color="#ffee44"),
+                                    self._btn.configure(state="normal", text="Generate Script →"),
+                                ))
+                                return
+
                 self.after(0, lambda: (_flash_taskbar(self.app), self.app.goto(S3_Script)))
             except Exception as e:
                 self.after(0, lambda err=e: (
