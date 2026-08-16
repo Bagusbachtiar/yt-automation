@@ -150,7 +150,28 @@ def _ollama(prompt: str, tokens: int = 600) -> str:
         return json.loads(r.read()).get("response", "")
 
 
-def gen_titles(animal: str, status_cb=None, channel: str = "faunaworks") -> list:
+def gen_titles(animal: str, status_cb=None, channel: str = "faunaworks", mode: str = "single") -> list:
+    if mode == "list":
+        if status_cb:
+            status_cb("Generating titles…")
+        raw = _ollama(
+            f"You are a YouTube Shorts title writer for FaunaWorks, an animal facts channel.\n"
+            f"Theme: {animal}\n"
+            f"Generate 5 title options for a '5 animals' video on this theme.\n\n"
+            f"STRICT RULES:\n"
+            f"- Format: '5 [Category or Adjective] [Hook]'\n"
+            f"  Examples: '5 Ocean Animals That Look Completely Fake', '5 Animals That Survive the Impossible'\n"
+            f"- Lean into ONE of: a surprising contradiction, mild visceral detail, or 'wait how is that real' mystery\n"
+            f"- 6-10 words max. No dashes, hyphens, colons, or em dashes. No filler like Amazing or Incredible\n"
+            f"- Each title must cover a different angle of the theme\n\n"
+            f'Return ONLY a JSON array: ["Title 1","Title 2","Title 3","Title 4","Title 5"]', 600
+        )
+        m = re.search(r'\[.*?\]', raw, re.DOTALL)
+        if not m:
+            raise ValueError(f"No array in response: {raw[:150]}")
+        cleaned = re.sub(r',(\s*[\]}])', r'\1', m.group())
+        return [t for t in json.loads(cleaned) if isinstance(t, str)][:5]
+
     from wikipedia_fetch import fetch_wikipedia_text
     if status_cb:
         status_cb("Fetching Wikipedia…")
@@ -414,6 +435,7 @@ class App(ctk.CTk):
             pass
         # shared pipeline state
         self.animal        = ""
+        self.script_mode   = "single"
         self.voice         = "bf_emma"
         self.channel       = next(iter(_load_channels()))
         self.titles        = []
@@ -513,13 +535,31 @@ class S1_Animal(Base):
         threading.Thread(target=self._fetch_s1_ch_info, args=(ch_key,), daemon=True).start()
 
         _ch_s1 = getattr(self.app, "channel", "faunaworks")
-        _is_sci = _ch_s1 == "science"
+        _is_sci  = _ch_s1 == "science"
         _is_myth = _ch_s1 == "mythology"
-        _h1(p, "What topic?" if _is_sci else ("What myth?" if _is_myth else "What animal?"))
-        _sub(p, ("Type any science topic — AI finds the best angle" if _is_sci
-                 else ("Type any myth or legend — AI finds the best angle" if _is_myth
-                       else "Type any animal — AI finds the best angle")))
-        _ph = "e.g. why ice floats" if _is_sci else ("e.g. Prometheus" if _is_myth else "e.g. elephant")
+        _is_list = getattr(self.app, "script_mode", "single") == "list" and not _is_sci and not _is_myth
+
+        # Mode toggle (fauna channel only)
+        if not _is_sci and not _is_myth:
+            mrow = ctk.CTkFrame(p, fg_color="transparent")
+            mrow.pack(pady=(10, 0))
+            self._mode_seg = ctk.CTkSegmentedButton(
+                mrow, values=["Single Animal", "5-Animal List"],
+                command=self._on_mode_change, width=300,
+            )
+            self._mode_seg.set("5-Animal List" if _is_list else "Single Animal")
+            self._mode_seg.pack()
+
+        if _is_list:
+            _h1(p, "What theme?")
+            _sub(p, "Type any theme — AI picks 5 animals and writes the script")
+        else:
+            _h1(p, "What topic?" if _is_sci else ("What myth?" if _is_myth else "What animal?"))
+            _sub(p, ("Type any science topic — AI finds the best angle" if _is_sci
+                     else ("Type any myth or legend — AI finds the best angle" if _is_myth
+                           else "Type any animal — AI finds the best angle")))
+        _ph = "e.g. why ice floats" if _is_sci else ("e.g. Prometheus" if _is_myth
+              else ("e.g. weird deep sea creatures" if _is_list else "e.g. elephant"))
         self._e = ctk.CTkEntry(p, placeholder_text=_ph,
                                width=320, font=("Arial", 15), height=42)
         self._e.pack(pady=(16, 8))
@@ -780,6 +820,10 @@ class S1_Animal(Base):
                 self.app.goto(S1_Animal)   # rebuild so labels/placeholders match channel
                 return
 
+    def _on_mode_change(self, value: str):
+        self.app.script_mode = "list" if value == "5-Animal List" else "single"
+        self.app.goto(S1_Animal)
+
     def _fetch_s1_ch_info(self, ch_key: str):
         try:
             r = subprocess.run(
@@ -853,51 +897,54 @@ class S1_Animal(Base):
             d.mkdir(exist_ok=True)
         CANDS_JSON.unlink(missing_ok=True)
         self._btn.configure(state="disabled", text="Working…")
-        self._lbl.configure(text="Fetching Wikipedia…", text_color="#888888")
+        self._lbl.configure(text="Generating titles…", text_color="#888888")
 
         def _status(msg):
             self.after(0, lambda m=msg: self._lbl.configure(text=m, text_color="#888888"))
 
+        is_list = getattr(self.app, "script_mode", "single") == "list"
+
         def run():
             try:
-                _status("Checking image/video coverage…")
-                from coverage_check import check_coverage
-                cov        = check_coverage(a, channel=self.app.channel)
-                video_tier = cov.get("video_tier", "red")
-                video      = cov.get("video", 0)
-                dot_tier   = video_tier
-                tiers = _load_tiers(self.app.channel)
-                tiers[a] = dot_tier
-                _save_tiers(tiers, self.app.channel)
+                if not is_list:
+                    _status("Checking image/video coverage…")
+                    from coverage_check import check_coverage
+                    cov        = check_coverage(a, channel=self.app.channel)
+                    video_tier = cov.get("video_tier", "red")
+                    video      = cov.get("video", 0)
+                    tiers = _load_tiers(self.app.channel)
+                    tiers[a] = video_tier
+                    _save_tiers(tiers, self.app.channel)
 
-                thin_video = video_tier != "green"
-                if thin_video:
-                    color = "#ff5544" if video_tier == "red" else "#ffee44"
-                    if self.app.channel == "mythology":
-                        video_line = f"  Commons images: {cov.get('commons', 0):,} files  (tier: {video_tier})"
-                    else:
-                        video_line = f"  Video: {video:,} Pexels clips  (tier: {video_tier})"
-                    msg = (
-                        f"Coverage for '{a}':\n{video_line}\n\n"
-                        "thin video coverage = mostly static images in final video"
-                        "\n\nProceed with script generation anyway?"
-                    )
-                    proceed = [None]
-                    ev = threading.Event()
-                    def _ask(msg=msg):
-                        proceed[0] = tkinter.messagebox.askyesno("Coverage Warning", msg)
-                        ev.set()
-                    self.after(0, _ask)
-                    ev.wait()
-                    if not proceed[0]:
-                        self.after(0, lambda c=color, v=video, vt=video_tier: (
-                            self._lbl.configure(
-                                text=f"Coverage: {vt} video ({v} clips) — cancelled", text_color=c),
-                            self._btn.configure(state="normal", text="Generate Titles →"),
-                        ))
-                        return
+                    thin_video = video_tier != "green"
+                    if thin_video:
+                        color = "#ff5544" if video_tier == "red" else "#ffee44"
+                        if self.app.channel == "mythology":
+                            video_line = f"  Commons images: {cov.get('commons', 0):,} files  (tier: {video_tier})"
+                        else:
+                            video_line = f"  Video: {video:,} Pexels clips  (tier: {video_tier})"
+                        msg = (
+                            f"Coverage for '{a}':\n{video_line}\n\n"
+                            "thin video coverage = mostly static images in final video"
+                            "\n\nProceed with script generation anyway?"
+                        )
+                        proceed = [None]
+                        ev = threading.Event()
+                        def _ask(msg=msg):
+                            proceed[0] = tkinter.messagebox.askyesno("Coverage Warning", msg)
+                            ev.set()
+                        self.after(0, _ask)
+                        ev.wait()
+                        if not proceed[0]:
+                            self.after(0, lambda c=color, v=video, vt=video_tier: (
+                                self._lbl.configure(
+                                    text=f"Coverage: {vt} video ({v} clips) — cancelled", text_color=c),
+                                self._btn.configure(state="normal", text="Generate Titles →"),
+                            ))
+                            return
 
-                self.app.titles = gen_titles(a, status_cb=_status, channel=self.app.channel)
+                self.app.titles = gen_titles(a, status_cb=_status, channel=self.app.channel,
+                                             mode="list" if is_list else "single")
                 self.after(0, lambda: (_flash_taskbar(self.app), self.app.goto(S2_Titles)))
             except Exception as e:
                 self.after(0, lambda err=e: (
@@ -986,7 +1033,8 @@ class S2_Titles(Base):
         p = self._reset()
         _h1(p, "Pick a title")
         _ch = getattr(self.app, "channel", "faunaworks")
-        _label = {"science": "Topic", "mythology": "Myth"}.get(_ch, "Animal")
+        _is_list_s2 = getattr(self.app, "script_mode", "single") == "list" and _ch not in ("science", "mythology")
+        _label = "Theme" if _is_list_s2 else {"science": "Topic", "mythology": "Myth"}.get(_ch, "Animal")
         _sub(p, f"{_label}: {self.app.animal}")
         # Science/mythology: prepend raw topic as first option (already a good title as-is)
         display_titles = self.app.titles[:]
@@ -1032,7 +1080,8 @@ class S2_Titles(Base):
 
         def run():
             try:
-                self.app.titles = gen_titles(self.app.animal, channel=self.app.channel)
+                _mode = getattr(self.app, "script_mode", "single")
+                self.app.titles = gen_titles(self.app.animal, channel=self.app.channel, mode=_mode)
                 self.after(0, lambda: (_flash_taskbar(self.app), self.app.goto(S2_Titles)))
             except Exception as e:
                 self.after(0, lambda err=e: (
@@ -1057,9 +1106,13 @@ class S2_Titles(Base):
 
         def run():
             try:
+                _mode = getattr(self.app, "script_mode", "single")
+                cmd = [sys.executable, "generate_script.py", self.app.animal,
+                       "--title", title, "--channel", self.app.channel]
+                if _mode == "list":
+                    cmd.extend(["--mode", "list"])
                 proc = subprocess.Popen(
-                    [sys.executable, "generate_script.py", self.app.animal,
-                     "--title", title, "--channel", self.app.channel],
+                    cmd,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, encoding="utf-8", cwd=_HERE,
                     env={**os.environ, "PYTHONIOENCODING": "utf-8"},
@@ -1073,8 +1126,11 @@ class S2_Titles(Base):
                 if proc.returncode != 0:
                     raise RuntimeError(f"generate_script.py exited {proc.returncode} — see log above")
                 self.app.script = json.loads(SCRIPT_JSON.read_text(encoding="utf-8"))
-                # Catch LLM returning wrong topic (uses "animal" for faunaworks, "topic" for science)
-                got = (self.app.script.get("animal") or self.app.script.get("topic", "")).strip().lower()
+                # Catch LLM returning wrong topic
+                if _mode == "list":
+                    got = self.app.script.get("theme", "").strip().lower()
+                else:
+                    got = (self.app.script.get("animal") or self.app.script.get("topic", "")).strip().lower()
                 want = self.app.animal.strip().lower()
                 if got and got != want:
                     raise RuntimeError(
@@ -1099,7 +1155,11 @@ class S3_Script(Base):
         p = self._reset()
         sc = self.app.script
         # Guard: if script is stale or mismatched, send user back rather than silently showing wrong content
-        got = (sc.get("animal") or sc.get("topic", "")).strip().lower()
+        _s3_mode = getattr(self.app, "script_mode", "single")
+        if _s3_mode == "list":
+            got = sc.get("theme", "").strip().lower()
+        else:
+            got = (sc.get("animal") or sc.get("topic", "")).strip().lower()
         want = getattr(self.app, "animal", "").strip().lower()
         if not sc.get("lines") or (got and want and got != want):
             ctk.CTkLabel(p, text=f"Script mismatch (got '{got}', expected '{want}'). Go back.",

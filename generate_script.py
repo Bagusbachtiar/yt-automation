@@ -23,6 +23,7 @@ OLLAMA_MODEL = "gemma2:9b"
 PROMPT_TEMPLATE          = Path("script_prompt_template.txt")
 PROMPT_TEMPLATE_SCIENCE  = Path("script_prompt_template_science.txt")
 PROMPT_TEMPLATE_MYTHOLOGY = Path("script_prompt_template_mythology.txt")
+PROMPT_TEMPLATE_LIST     = Path("script_prompt_template_list.txt")
 SCRIPT_JSON = Path("script.json")
 
 MAX_WIKI_CHARS = 4000
@@ -214,22 +215,28 @@ def _validate_keywords(lines: list, topic: str, channel: str, topic_type: str) -
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("topic", nargs="+", help="Topic (animal name or science question)")
+    parser.add_argument("topic", nargs="+", help="Topic (animal name, science question, or list theme)")
     parser.add_argument("--title",   default=None, help="Chosen title for content direction")
-    parser.add_argument("--channel", default="faunaworks", help="Channel key (faunaworks|science)")
+    parser.add_argument("--channel", default="faunaworks", help="Channel key (faunaworks|science|mythology)")
+    parser.add_argument("--mode",    default="single", choices=["single", "list"],
+                        help="single = one animal/topic; list = 5-animal list format")
     args = parser.parse_args()
     topic         = " ".join(args.topic)
     content_topic = args.title if args.title else topic
     channel       = args.channel
+    is_list       = args.mode == "list"
 
     print(f"\nTopic:   {topic}")
     print(f"Channel: {channel}")
+    print(f"Mode:    {args.mode}")
     if args.title:
         print(f"Title:   {args.title}")
 
-    is_science  = channel == "science"
+    is_science   = channel == "science"
     is_mythology = channel == "mythology"
-    if is_science:
+    if is_list:
+        template_path = PROMPT_TEMPLATE_LIST
+    elif is_science:
         template_path = PROMPT_TEMPLATE_SCIENCE
     elif is_mythology:
         template_path = PROMPT_TEMPLATE_MYTHOLOGY
@@ -239,43 +246,46 @@ def main():
         sys.exit(f"[ERROR] {template_path} not found.")
 
     # ── Grounding ─────────────────────────────────────────────────────────────
-    print("Fetching Wikipedia article...")
-    wiki_title, wiki_text = fetch_wikipedia_text(topic)
-    print(f"Found: '{wiki_title}' ({len(wiki_text)} chars)")
+    if is_list:
+        # List mode: theme input doesn't map to a single Wikipedia article.
+        # LLM picks mainstream animals it knows well; grounding not needed.
+        reference  = ""
+        wiki_title = ""
+        print("List mode — skipping grounding")
+        topic_type = "general"
+    else:
+        print("Fetching Wikipedia article...")
+        wiki_title, wiki_text = fetch_wikipedia_text(topic)
+        print(f"Found: '{wiki_title}' ({len(wiki_text)} chars)")
 
-    # Guard: fuzzy search can return wrong articles ("How stars are born" → crime film).
-    # Only use grounding if at least one non-trivial topic word appears in the article title.
-    _WIKI_STOP = {"what","when","where","does","have","will","been","they","this","that",
-                  "from","with","into","some","born","form","forms","formed","make","made",
-                  "happen","happens","work","works","exist","need","needs","live","lives",
-                  "grow","grows","cause","causes","found","feel","move","turn","keep","come",
-                  "came","goes","look","seem","show","take","much","more","most","also","only",
-                  "just","even","well","actually","really","truly","actually","never","always"}
-    _topic_words = {w for w in topic.lower().split() if len(w) > 3 and w not in _WIKI_STOP}
-    _wiki_words  = set(wiki_title.lower().split())
-    # prefix match handles plurals: "rainbows"/"rainbow", "earthquakes"/"earthquake"
-    _matched = any(tw.startswith(ww) or ww.startswith(tw) for tw in _topic_words for ww in _wiki_words)
-    if _matched:
-        # Secondary check: wiki title may be a named concept (e.g. "Blue Ocean Strategy") whose
-        # words happen to overlap the topic ("ocean"). If wiki title has extra words that are
-        # concept-domain suffixes and those words aren't in the topic, reject.
-        _CONCEPT_SUFFIXES = {"strategy","theory","effect","law","paradox","principle","model",
-                             "method","framework","theorem","hypothesis","syndrome","fallacy",
-                             "conjecture","protocol","algorithm","concept","approach"}
-        _wiki_extra = {w for w in _wiki_words if w not in _topic_words and w not in _WIKI_STOP and len(w) > 3}
-        _false_concept = _wiki_extra & _CONCEPT_SUFFIXES
-        if _false_concept:
-            print(f"  [WARN] Wikipedia title '{wiki_title}' is a named concept ({_false_concept}) not matching topic — skipping grounding")
-            _matched = False
-    if not _matched:
-        print(f"  [WARN] Wikipedia title '{wiki_title}' doesn't match topic — skipping grounding")
-        wiki_text = ""
+        _WIKI_STOP = {"what","when","where","does","have","will","been","they","this","that",
+                      "from","with","into","some","born","form","forms","formed","make","made",
+                      "happen","happens","work","works","exist","need","needs","live","lives",
+                      "grow","grows","cause","causes","found","feel","move","turn","keep","come",
+                      "came","goes","look","seem","show","take","much","more","most","also","only",
+                      "just","even","well","actually","really","truly","actually","never","always"}
+        _topic_words = {w for w in topic.lower().split() if len(w) > 3 and w not in _WIKI_STOP}
+        _wiki_words  = set(wiki_title.lower().split())
+        _matched = any(tw.startswith(ww) or ww.startswith(tw) for tw in _topic_words for ww in _wiki_words)
+        if _matched:
+            _CONCEPT_SUFFIXES = {"strategy","theory","effect","law","paradox","principle","model",
+                                 "method","framework","theorem","hypothesis","syndrome","fallacy",
+                                 "conjecture","protocol","algorithm","concept","approach"}
+            _wiki_extra = {w for w in _wiki_words if w not in _topic_words and w not in _WIKI_STOP and len(w) > 3}
+            _false_concept = _wiki_extra & _CONCEPT_SUFFIXES
+            if _false_concept:
+                print(f"  [WARN] Wikipedia title '{wiki_title}' is a named concept ({_false_concept}) not matching topic — skipping grounding")
+                _matched = False
+        if not _matched:
+            print(f"  [WARN] Wikipedia title '{wiki_title}' doesn't match topic — skipping grounding")
+            wiki_text = ""
 
-    reference = wiki_text[:MAX_WIKI_CHARS]
-    if len(wiki_text) > MAX_WIKI_CHARS:
-        reference += "\n[...truncated]"
+        reference = wiki_text[:MAX_WIKI_CHARS]
+        if len(wiki_text) > MAX_WIKI_CHARS:
+            reference += "\n[...truncated]"
 
-    if is_science:
+        topic_type = "general"
+    if not is_list and is_science:
         topic_type = classify_topic(topic)
         print(f"Topic type: {topic_type}")
         if topic_type == "space":
@@ -294,7 +304,7 @@ def main():
                 reference += f"\n\n[Perenual Plant Database]\n{perenual_text[:2000]}"
             else:
                 print("Perenual: no data (key missing or not found)")
-    elif not is_mythology:
+    elif not is_mythology and not is_list:
         print("Fetching EOL species data...")
         eol_name, eol_text = fetch_eol_text(topic)
         if eol_text:
@@ -314,7 +324,7 @@ def main():
     template = template_path.read_text(encoding="utf-8")
     direction_hint = ""
     if args.title:
-        subject_word = "myth" if is_mythology else ("topic" if is_science else "animal")
+        subject_word = "myth" if is_mythology else ("topic" if is_science else ("theme" if is_list else "animal"))
         direction_hint = (
             f"\nCONTENT DIRECTION: The title for this video has already been chosen: \"{content_topic}\". "
             f"Every line in your script MUST support and be consistent with what this title promises. "
@@ -331,7 +341,7 @@ def main():
         if attempt > 1:
             print(f"Retrying ({attempt}/{MAX_RETRIES})...")
         print(f"Calling Ollama ({OLLAMA_MODEL})...")
-        raw = call_ollama(active_prompt, num_predict=5000 if (is_science or is_mythology) else 3500)
+        raw = call_ollama(active_prompt, num_predict=5000 if (is_science or is_mythology or is_list) else 3500)
         try:
             m = re.search(r'\{.*\}', raw, re.DOTALL)
             if not m:
@@ -343,11 +353,12 @@ def main():
             print(f"  [WARN] JSON parse failed: {e}, retrying...")
             continue
         lines = candidate.get("lines", [])
-        if len(lines) < MIN_LINES:
+        min_lines_needed = 8 if is_list else MIN_LINES
+        if len(lines) < min_lines_needed:
             print(f"  [WARN] Only {len(lines)} lines (need {MIN_LINES}+), retrying...")
             active_prompt = (prompt +
                 f"\n\nCRITICAL REMINDER: Your last response only had {len(lines)} lines. "
-                f"You MUST write at least {MIN_LINES} lines. "
+                f"You MUST write at least {min_lines_needed} lines. "
                 f"Add more interesting facts, mechanisms, and examples about this topic to reach the required count.")
             continue
         script = candidate
@@ -364,17 +375,21 @@ def main():
     if "title" in script:
         script["title"] = script["title"].replace("—", ",").replace(" ,", ",")
 
-    # Validate and repair thin keywords (always for science; for fauna only repairs lines at 0)
-    print("Validating image keywords...")
-    topic_type_val = classify_topic(topic) if is_science else "general"
-    lines = _validate_keywords(lines, topic, channel, topic_type_val)
-    script["lines"] = lines
-
-    script["wiki_title"] = wiki_title
-    if is_science or is_mythology:
-        script["topic"] = topic
+    if is_list:
+        # Keywords are simple animal names — reliable enough, skip validation overhead
+        script["lines"] = lines
+        script["theme"] = topic
     else:
-        script["animal"] = topic
+        # Validate and repair thin keywords (always for science; for fauna only repairs lines at 0)
+        print("Validating image keywords...")
+        topic_type_val = classify_topic(topic) if is_science else "general"
+        lines = _validate_keywords(lines, topic, channel, topic_type_val)
+        script["lines"] = lines
+        script["wiki_title"] = wiki_title
+        if is_science or is_mythology:
+            script["topic"] = topic
+        else:
+            script["animal"] = topic
     SCRIPT_JSON.write_text(json.dumps(script, indent=2, ensure_ascii=False), encoding="utf-8")
 
     title = script.get("title", "(no title)")
