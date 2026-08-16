@@ -44,12 +44,18 @@ STRICT RULES:
       Tags must be actual search phrases people type, no hashtag symbols. Specific tags should match what someone would search after watching a teaser of this video.
 
 TITLE RULES:
-- Use a curiosity-gap format that teases something surprising without giving it away. Proven patterns:
+- Lean into ONE of these hooks: a surprising contradiction, a mild visceral or uncomfortable detail, or a "wait, why would that happen" mini-mystery. Neutral informational titles scroll past. Tension stops the scroll.
+- Proven patterns:
   - "This [Animal] Can [Shocking Ability]" — e.g. "This Tiny Shrimp Can Punch Through Glass"
+  - "Why [Animal] [Uncomfortable or Surprising Fact]" — e.g. "Why Bees Vomit to Make Honey"
+  - "How [Animal] [Survives Something That Would Kill You]" — e.g. "How Penguins Survive Temperatures That Would Kill You"
   - "The [Animal] That [Does Something Unexpected]" — e.g. "The Animal That Builds Dams Better Than Humans"
-  - "Why [Animal] [Surprising Fact]" — e.g. "Why This Fish Lives Forever"
-  - "[Surprising Claim] — Meet the [Animal]" — e.g. "It Never Dies — Meet the Immortal Jellyfish"
-- Title must make someone STOP scrolling. If it sounds like a textbook heading, rewrite it.
+  - "[Surprising Claim]. Meet the [Animal]" — e.g. "It Never Dies. Meet the Immortal Jellyfish"
+- Weak vs Strong rewrites (use as calibration):
+  - WEAK: "Facts About Octopus Camouflage" → STRONG: "This Octopus Can Vanish in Seconds"
+  - WEAK: "How Bees Make Honey" → STRONG: "Why Bees Vomit to Make Honey"
+  - WEAK: "Penguin Adaptations" → STRONG: "How Penguins Survive Temperatures That Would Kill You"
+- Title must make someone STOP scrolling. If it sounds like a textbook heading or Wikipedia article title, rewrite it.
 - 6-10 words max. No filler words like "Amazing" or "Incredible."
 - NEVER use dashes, hyphens, em dashes (-, --, —), or colons (:) in the title.
 

@@ -25,6 +25,23 @@ from typing import Optional
 
 _CNW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
+_OVERLAY_STOPS = frozenset({
+    "the","a","an","this","that","these","those","is","are","was","were",
+    "be","been","being","have","has","had","do","does","did","will","would",
+    "can","could","should","may","might","shall","to","of","in","on","at",
+    "by","for","with","from","its","it","they","their","how","why","what",
+    "when","where","who","which","here","there","so","if","but","and","or",
+    "not","just","meet","ever","never","you","your","we","our","than","here",
+})
+
+def _pick_overlay_word(title: str) -> str:
+    """Pick the first non-stopword from the title, ALL CAPS, for the opening frame overlay."""
+    for w in title.split():
+        clean = w.strip(".,!?;:\"'").upper()
+        if clean.lower() not in _OVERLAY_STOPS and len(clean) >= 3 and clean.isalpha():
+            return clean
+    return ""
+
 # ── Config ────────────────────────────────────────────────────────────────────
 RES_W, RES_H = 1080, 1920
 FPS = 30
@@ -81,6 +98,24 @@ def find_file(directory: Path, stem: str, exts) -> Optional[Path]:
     return None
 
 
+_BREAK_AFTER_CHARS = frozenset({',', ';'})
+
+def _smart_chunks(words: list) -> list:
+    """Chunk words at punctuation boundaries when possible, else at WORDS_PER_CHUNK."""
+    chunks = []
+    i = 0
+    while i < len(words):
+        end = min(i + WORDS_PER_CHUNK, len(words))
+        break_at = end
+        for j in range(i, end):
+            if words[j].rstrip('"\'').endswith(tuple(_BREAK_AFTER_CHARS)):
+                break_at = j + 1
+                break
+        chunks.append(words[i:break_at])
+        i = break_at
+    return chunks
+
+
 def build_chunk_captions(entries: list) -> list:
     """
     Caption events from character-proportional chunking — no Whisper needed.
@@ -91,7 +126,7 @@ def build_chunk_captions(entries: list) -> list:
     t = 0.0
     for _lid, text, _media, _audio, duration, _is_video in entries:
         words = text.split()
-        chunks = [words[i:i + WORDS_PER_CHUNK] for i in range(0, len(words), WORDS_PER_CHUNK)]
+        chunks = _smart_chunks(words)
         if chunks:
             total_chars = sum(len(" ".join(c)) for c in chunks) or 1
             chunk_t = t
@@ -156,6 +191,7 @@ def build_segment(
     zoom_out: bool = False,
     pad_audio: bool = True,
     leading_silence: float = 0.0,
+    overlay_word: str = "",
 ):
     pad = SEGMENT_PAD_SECS if (audio and pad_audio) else 0.0
     effective_duration = leading_silence + duration + pad
@@ -178,6 +214,10 @@ def build_segment(
         f"d={frames}:s={RES_W}x{RES_H}:fps={FPS}"
     )
     vf = f"{scale},{zoompan}"
+    if overlay_word:
+        vf += (f",drawtext=text='{overlay_word}':fontsize=160:bold=1"
+               f":fontcolor=white:x=(w-text_w)/2:y=(h*68/100)"
+               f":borderw=10:bordercolor=black")
 
     base = ["ffmpeg", "-y", "-loop", "1", "-r", str(FPS), "-i", str(image)]
 
@@ -220,6 +260,7 @@ def build_video_segment(
     out: Path,
     pad_audio: bool = True,
     leading_silence: float = 0.0,
+    overlay_word: str = "",
 ):
     pad = SEGMENT_PAD_SECS if (audio and pad_audio) else 0.0
     effective_duration = leading_silence + duration + pad
@@ -235,6 +276,10 @@ def build_video_segment(
         f"scale={RES_W}:{RES_H}:force_original_aspect_ratio=increase,"
         f"crop={RES_W}:{RES_H},fps={FPS}"
     )
+    if overlay_word:
+        vf += (f",drawtext=text='{overlay_word}':fontsize=160:bold=1"
+               f":fontcolor=white:x=(w-text_w)/2:y=(h*68/100)"
+               f":borderw=10:bordercolor=black")
 
     base = ["ffmpeg", "-y", "-i", str(clip)]
 
@@ -358,6 +403,10 @@ def main():
 
     TMP_SEGS.mkdir(exist_ok=True)
 
+    overlay_word = _pick_overlay_word(title)
+    if overlay_word:
+        print(f"Opening frame overlay: {overlay_word}")
+
     # Collect valid entries first so we know which is last (for apad skip)
     entries = []
     for line in lines:
@@ -385,10 +434,11 @@ def main():
 
         seg_out = TMP_SEGS / f"seg_{lid:03d}.mp4"
         leading = 0.0 if idx == 0 else CROSSFADE_SECS
+        word = overlay_word if idx == 0 else ""
         if is_video:
-            build_video_segment(media, duration, audio, seg_out, pad_audio=not is_last, leading_silence=leading)
+            build_video_segment(media, duration, audio, seg_out, pad_audio=not is_last, leading_silence=leading, overlay_word=word)
         else:
-            build_segment(media, duration, audio, seg_out, zoom_out=(idx % 2 == 1), pad_audio=not is_last, leading_silence=leading)
+            build_segment(media, duration, audio, seg_out, zoom_out=(idx % 2 == 1), pad_audio=not is_last, leading_silence=leading, overlay_word=word)
         segments.append(seg_out)
 
     if not segments:
