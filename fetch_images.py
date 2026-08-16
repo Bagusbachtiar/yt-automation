@@ -761,7 +761,8 @@ def main():
             if wiki_url:
                 used_wiki.add(wiki_url)
                 wiki_caption_line = wiki_captions.get(wiki_url, "")
-        animal = script.get("animal") or script.get("topic", "")
+        # list mode has no "animal" key; use the per-line keyword as the filter anchor
+        animal = script.get("animal") or script.get("topic") or keyword
         print(f"  Line {lid:2d}: {keyword}")
         c = fetch_candidates(keyword, pexels_key, pixabay_key, flickr_key=flickr_key,
                              wiki_url=wiki_url, wiki_caption=wiki_caption_line,
