@@ -215,8 +215,9 @@ def build_segment(
     )
     vf = f"{scale},{zoompan}"
     if overlay_word:
-        vf += (f",drawtext=text='{overlay_word}':fontsize=160:bold=1"
-               f":fontcolor=white:x=(w-text_w)/2:y=(h*68/100)"
+        vf += (f",drawtext=text='{overlay_word}':fontsize=160"
+               f":fontname='Arial Black':fontcolor=white"
+               f":x=(w-text_w)/2:y=(h*68/100)"
                f":borderw=10:bordercolor=black")
 
     base = ["ffmpeg", "-y", "-loop", "1", "-r", str(FPS), "-i", str(image)]
@@ -277,8 +278,9 @@ def build_video_segment(
         f"crop={RES_W}:{RES_H},fps={FPS}"
     )
     if overlay_word:
-        vf += (f",drawtext=text='{overlay_word}':fontsize=160:bold=1"
-               f":fontcolor=white:x=(w-text_w)/2:y=(h*68/100)"
+        vf += (f",drawtext=text='{overlay_word}':fontsize=160"
+               f":fontname='Arial Black':fontcolor=white"
+               f":x=(w-text_w)/2:y=(h*68/100)"
                f":borderw=10:bordercolor=black")
 
     base = ["ffmpeg", "-y", "-i", str(clip)]
