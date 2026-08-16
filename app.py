@@ -1275,6 +1275,25 @@ class S4_Images(Base):
                     pass
         self.app.bind_all("<MouseWheel>", on_wheel)
 
+    def _do_auto_assign(self, cands: dict, pool: list):
+        """Pick best image per line and pre-populate assigned. Runs on bg thread."""
+        url_to_idx = {url: i for i, (src, url, thumb, cap) in enumerate(pool)}
+        assigned = {}
+        src_prio = ("pexels_video", "pexels", "pixabay", "inaturalist", "gbif",
+                    "wiki_keyword", "wikipedia", "commons")
+        for lid, data in cands.items():
+            for src in src_prio:
+                for entry in data["sources"].get(src, []):
+                    url, _, _ = _extract(src, entry)
+                    if url and url in url_to_idx:
+                        idx = url_to_idx[url]
+                        if idx not in assigned.values():
+                            assigned[lid] = idx
+                            break
+                if lid in assigned:
+                    break
+        self.app.assigned = assigned
+
     def _load(self):
         try:
             self.after(0, lambda: self._stlbl.configure(text="Running fetch_images.py…"))
@@ -1289,6 +1308,8 @@ class S4_Images(Base):
             cands = json.loads(CANDS_JSON.read_text(encoding="utf-8"))
             pool  = pool_from(cands, _SRC_ORDER.get(self.app.channel, SRC_ORDER))
             self.app.pool = pool
+            if getattr(self.app, "script_mode", "single") == "list":
+                self._do_auto_assign(cands, pool)
 
             items = []
             for idx, (src, url, thumb, caption) in enumerate(pool):
@@ -1350,9 +1371,19 @@ class S4_Images(Base):
         except Exception:
             pass
         self._grid.after(50, self._update_scrollregion)
-        self._stlbl.configure(
-            text=f"{len(items)}/{len(self.app.pool)} thumbnails ready. "
-                 "Select a line (left), then click an image.")
+
+        total = len(self.app.script.get("lines", []))
+        if self.app.assigned:
+            self._refresh_visuals()
+            done = len(self.app.assigned)
+            self._stlbl.configure(
+                text=f"Auto-assigned {done}/{total} lines. Click any image to override.")
+            if done == total:
+                self._appbtn.configure(state="normal")
+        else:
+            self._stlbl.configure(
+                text=f"{len(items)}/{len(self.app.pool)} thumbnails ready. "
+                     "Select a line (left), then click an image.")
 
     def _set_col_weights(self, cols: int):
         try:
